@@ -1,0 +1,6 @@
+{
+  "name": "Credit Card Expense & Due Tracker",
+  "description": "ระบบติดตามรายการใช้บัตรเครดิต สรุปยอดใช้จ่ายรายเดือน พร้อมแจ้งเตือนกำหนดชำระ และบันทึกข้อมูลลง Google Sheets อัตโนมัติ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
