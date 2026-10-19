@@ -4,12 +4,9 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { User } from 'firebase/auth';
 import {
   CreditCard,
   Transaction,
-  TransactionCategory,
-  GoogleSheetInfo,
   CardDueStatus,
   MonthlyStats,
 } from './types';
@@ -26,12 +23,6 @@ import {
   getTransactionBillingCycleMonth,
   calculateCardCutoffAlertStatus,
 } from './utils/cardUtils';
-import { initAuth, googleSignIn, logout, getAccessToken } from './services/auth';
-import {
-  findExistingTrackerSheet,
-  createTrackerSpreadsheet,
-  syncAllDataToGoogleSheet,
-} from './services/sheets';
 
 import { Header } from './components/Header';
 import { DueAlertBanner } from './components/DueAlertBanner';
@@ -40,27 +31,25 @@ import { MonthlySummary } from './components/MonthlySummary';
 import { TransactionList } from './components/TransactionList';
 import { TransactionModal } from './components/TransactionModal';
 import { CardModal } from './components/CardModal';
-import { GoogleSheetModal } from './components/GoogleSheetModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { HistoricalDashboard } from './components/HistoricalDashboard';
 import { InstallmentPlansModal } from './components/InstallmentPlansModal';
-import { BackgroundModal } from './components/BackgroundModal';
+import { BackgroundModal, BackgroundPosition } from './components/BackgroundModal';
+import { ExportCsvModal } from './components/ExportCsvModal';
+import { BrandCustomizationModal } from './components/BrandCustomizationModal';
 import { CreditCard as CardIcon, BarChart3 } from 'lucide-react';
 
 const STORAGE_KEY_CARDS = 'cardpulse_cards_v1';
 const STORAGE_KEY_TXS = 'cardpulse_transactions_v1';
-const STORAGE_KEY_SHEET = 'cardpulse_sheet_v1';
 const STORAGE_KEY_BG_IMAGE = 'cardpulse_bg_image_v1';
 const STORAGE_KEY_BG_OPACITY = 'cardpulse_bg_opacity_v1';
 const STORAGE_KEY_BG_BLUR = 'cardpulse_bg_blur_v1';
 const STORAGE_KEY_BG_POSITION = 'cardpulse_bg_position_v1';
+const STORAGE_KEY_BRAND_NAME = 'cardpulse_brand_name_v1';
+const STORAGE_KEY_BRAND_LOGO = 'cardpulse_brand_logo_v1';
+const STORAGE_KEY_BRAND_TAGLINE = 'cardpulse_brand_tagline_v1';
 
 export default function App() {
-  // Auth state
-  const [user, setUser] = useState<User | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
   // App data state
   const [cards, setCards] = useState<CreditCard[]>(() => {
     try {
@@ -88,108 +77,60 @@ export default function App() {
     }
   });
 
-  const [sheetInfo, setSheetInfo] = useState<GoogleSheetInfo | null>(() => {
+  // UI state
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'tracker' | 'dashboard'>('tracker');
+
+  // Background Customization State (Stored in localStorage)
+  const [bgImage, setBgImage] = useState<string | null>(() => {
+    return localStorage.getItem(STORAGE_KEY_BG_IMAGE) || null;
+  });
+  const [bgOpacity, setBgOpacity] = useState<number>(() => {
+    const val = localStorage.getItem(STORAGE_KEY_BG_OPACITY);
+    return val !== null ? parseFloat(val) : 0.7;
+  });
+  const [bgBlur, setBgBlur] = useState<number>(() => {
+    const val = localStorage.getItem(STORAGE_KEY_BG_BLUR);
+    return val !== null ? parseFloat(val) : 4;
+  });
+  const [bgPosition, setBgPosition] = useState<BackgroundPosition | null>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_SHEET);
-      return saved ? JSON.parse(saved) : null;
+      const val = localStorage.getItem(STORAGE_KEY_BG_POSITION);
+      return val ? JSON.parse(val) : null;
     } catch {
       return null;
     }
   });
 
-  // UI state
-  const [activeTab, setActiveTab] = useState<'tracker' | 'dashboard'>('tracker');
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<TransactionCategory | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Brand customization state
+  const [brandName, setBrandName] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEY_BRAND_NAME) || 'CardPulse';
+  });
+  const [brandLogo, setBrandLogo] = useState<string | null>(() => {
+    return localStorage.getItem(STORAGE_KEY_BRAND_LOGO) || null;
+  });
+  const [brandTagline, setBrandTagline] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEY_BRAND_TAGLINE) || 'ระบบติดตามและจัดการค่าบัตรเครดิต';
+  });
 
   // Modals state
   const [isNewTxModalOpen, setIsNewTxModalOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [isCardModalOpen, setIsCardModalOpen] = useState(false);
   const [editingCard, setEditingCard] = useState<CreditCard | null>(null);
-  const [isSheetModalOpen, setIsSheetModalOpen] = useState(false);
-  const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
   const [isBgModalOpen, setIsBgModalOpen] = useState(false);
+  const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isBrandModalOpen, setIsBrandModalOpen] = useState(false);
 
-  // Custom Background State
-  const [bgImage, setBgImage] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY_BG_IMAGE);
-    } catch {
-      return null;
-    }
-  });
-
-  const [bgOpacity, setBgOpacity] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_BG_OPACITY);
-      return saved ? Number(saved) : 65;
-    } catch {
-      return 65;
-    }
-  });
-
-  const [bgBlur, setBgBlur] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_BG_BLUR);
-      return saved ? Number(saved) : 4;
-    } catch {
-      return 4;
-    }
-  });
-
-  const [bgPosition, setBgPosition] = useState<{ x: number; y: number; zoom: number } | null>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_BG_POSITION);
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  const handleSaveBackground = (
-    newBg: string | null,
-    newOpacity: number,
-    newBlur: number,
-    newPosition?: { x: number; y: number; zoom: number } | null
-  ) => {
-    setBgImage(newBg);
-    setBgOpacity(newOpacity);
-    setBgBlur(newBlur);
-    setBgPosition(newPosition || null);
-    try {
-      if (newBg) {
-        localStorage.setItem(STORAGE_KEY_BG_IMAGE, newBg);
-      } else {
-        localStorage.removeItem(STORAGE_KEY_BG_IMAGE);
-      }
-      localStorage.setItem(STORAGE_KEY_BG_OPACITY, String(newOpacity));
-      localStorage.setItem(STORAGE_KEY_BG_BLUR, String(newBlur));
-      if (newPosition) {
-        localStorage.setItem(STORAGE_KEY_BG_POSITION, JSON.stringify(newPosition));
-      } else {
-        localStorage.removeItem(STORAGE_KEY_BG_POSITION);
-      }
-      showToast(newBg ? 'อัปเดตภาพพื้นหลังเรียบร้อยแล้ว' : 'คืนค่าภาพพื้นหลังเริ่มต้นแล้ว');
-    } catch (e) {
-      console.warn('LocalStorage warning saving background:', e);
-      showToast('บันทึกรูปภาพพื้นหลังในระบบแล้ว');
-    }
-  };
-
-  // Destructive Confirmation Dialog
+  // Confirmation Modal state
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
     message: string;
     detail?: string;
     confirmLabel?: string;
-    secondaryAction?: {
-      label: string;
-      onClick: () => void;
-    };
+    secondaryAction?: { label: string; onClick: () => void };
     onConfirm: () => void;
   }>({
     isOpen: false,
@@ -198,16 +139,23 @@ export default function App() {
     onConfirm: () => {},
   });
 
-  // Ensure all installment series appear in subsequent cycles on initial load
-  useEffect(() => {
-    const { updatedTransactions, addedCount } = autoPopulateMissingInstallments(transactions);
-    if (addedCount > 0) {
-      setTransactions(updatedTransactions);
-      console.log(`Auto-generated ${addedCount} upcoming installment transactions`);
-    }
+  // Toast feedback state
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 4000);
   }, []);
 
-  // Save to LocalStorage
+  // Calculate current active month: default to current real-world month (YYYY-MM)
+  const [currentMonth, setCurrentMonth] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+
+  // Save to localStorage when state changes
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(cards));
   }, [cards]);
@@ -216,48 +164,71 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY_TXS, JSON.stringify(transactions));
   }, [transactions]);
 
-  useEffect(() => {
-    if (sheetInfo) {
-      localStorage.setItem(STORAGE_KEY_SHEET, JSON.stringify(sheetInfo));
+  // Handle saving background settings
+  const handleSaveBackground = (
+    newBg: string | null,
+    newOpacity: number,
+    newBlur: number,
+    newPosition?: BackgroundPosition | null
+  ) => {
+    setBgImage(newBg);
+    setBgOpacity(newOpacity);
+    setBgBlur(newBlur);
+    setBgPosition(newPosition || null);
+
+    if (newBg) {
+      localStorage.setItem(STORAGE_KEY_BG_IMAGE, newBg);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_BG_IMAGE);
     }
-  }, [sheetInfo]);
+    localStorage.setItem(STORAGE_KEY_BG_OPACITY, String(newOpacity));
+    localStorage.setItem(STORAGE_KEY_BG_BLUR, String(newBlur));
+    if (newPosition) {
+      localStorage.setItem(STORAGE_KEY_BG_POSITION, JSON.stringify(newPosition));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_BG_POSITION);
+    }
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4000);
-  }, []);
+    showToast(newBg ? 'บันทึกภาพพื้นหลังเรียบร้อยแล้ว' : 'รีเซ็ตภาพพื้นหลังเป็นค่าเริ่มต้นแล้ว');
+  };
 
-  // Compute available months from transactions or default to current month
-  // Future installments waiting for cutoff do not pollute tracker months
+  // Handle saving brand name, logo, and tagline
+  const handleSaveBrand = (
+    newName: string,
+    newLogo: string | null,
+    newTagline: string
+  ) => {
+    setBrandName(newName);
+    setBrandLogo(newLogo);
+    setBrandTagline(newTagline);
+
+    localStorage.setItem(STORAGE_KEY_BRAND_NAME, newName);
+    if (newLogo) {
+      localStorage.setItem(STORAGE_KEY_BRAND_LOGO, newLogo);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_BRAND_LOGO);
+    }
+    localStorage.setItem(STORAGE_KEY_BRAND_TAGLINE, newTagline);
+
+    showToast('บันทึกการตั้งค่าชื่อแบรนด์และโลโก้เรียบร้อยแล้ว');
+  };
+
+  // Derive available months from transactions + cards
   const availableMonths = useMemo(() => {
-    const current = new Date();
-    const currentMonthStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
-    const monthsSet = new Set<string>([currentMonthStr]);
+    const months = new Set<string>();
+    const now = new Date();
+    const thisMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    months.add(thisMonthStr);
 
-    transactions.forEach((t) => {
-      if (t.billingCycleMonth && !isFutureInstallmentHidden(t, cards)) {
-        monthsSet.add(t.billingCycleMonth);
-      }
+    transactions.forEach((tx) => {
+      const m = getTransactionBillingCycleMonth(tx, cards);
+      months.add(m);
     });
 
-    return Array.from(monthsSet).sort().reverse();
+    return Array.from(months).sort().reverse();
   }, [transactions, cards]);
 
-  const [currentMonth, setCurrentMonth] = useState<string>(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  });
-
-  // Ensure currentMonth is valid in availableMonths
-  useEffect(() => {
-    if (!availableMonths.includes(currentMonth) && availableMonths.length > 0) {
-      setCurrentMonth(availableMonths[0]);
-    }
-  }, [availableMonths, currentMonth]);
-
-  // Compute Due Statuses for each card
+  // Compute due status for each card
   const dueStatuses: CardDueStatus[] = useMemo(() => {
     return cards.map((card) => calculateCardDueStatus(card, transactions, new Date()));
   }, [cards, transactions]);
@@ -278,140 +249,21 @@ export default function App() {
     return calculateMonthlyStats(transactions, currentMonth, cards);
   }, [transactions, currentMonth, cards]);
 
-  // Installments in current month
-  const { installmentCount, totalInstallmentMonthly } = useMemo(() => {
-    const monthTxs = transactions.filter((t) => {
-      if (!t.isInstallment) return false;
-      if (isFutureInstallmentHidden(t, cards)) return false;
-      return getTransactionBillingCycleMonth(t, cards) === currentMonth;
-    });
-    const total = monthTxs.reduce(
-      (sum, t) => sum + (t.monthlyInstallmentAmount || t.amount),
-      0
+  // Active installment stats for current month
+  const activeInstallments = useMemo(() => {
+    return transactions.filter(
+      (t) =>
+        t.isInstallment &&
+        (getTransactionBillingCycleMonth(t, cards) === currentMonth ||
+          t.billingCycleMonth === currentMonth)
     );
-    return { installmentCount: monthTxs.length, totalInstallmentMonthly: total };
-  }, [transactions, currentMonth, cards]);
+  }, [transactions, cards, currentMonth]);
 
-  // Helper to sync to Google Sheets
-  const triggerSheetSync = useCallback(
-    async (token: string, targetSheet: GoogleSheetInfo, currentCards: CreditCard[], currentTxs: Transaction[]) => {
-      try {
-        setIsSyncing(true);
-        const allSummaries = availableMonths.map((m) => calculateMonthlyStats(currentTxs, m, currentCards));
-        await syncAllDataToGoogleSheet(token, targetSheet.spreadsheetId, currentCards, currentTxs, allSummaries);
-        setSheetInfo((prev) =>
-          prev ? { ...prev, lastSyncedAt: new Date().toISOString() } : null
-        );
-        showToast('ซิงค์ข้อมูลกับ Google Sheets เรียบร้อยแล้ว');
-      } catch (err: any) {
-        console.error('Failed to sync to sheets:', err);
-        showToast('การซิงค์กับ Google Sheets ไม่สำเร็จ: ' + (err.message || 'Error'));
-      } finally {
-        setIsSyncing(false);
-      }
-    },
-    [availableMonths, showToast]
+  const installmentCount = activeInstallments.length;
+  const totalInstallmentMonthly = activeInstallments.reduce(
+    (sum, t) => sum + (t.monthlyInstallmentAmount || t.amount),
+    0
   );
-
-  // Initialize Auth
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      async (authUser, token) => {
-        setUser(authUser);
-        setAccessToken(token);
-
-        // Check if spreadsheet already exists, otherwise create
-        try {
-          let sheet = sheetInfo;
-          if (!sheet) {
-            sheet = await findExistingTrackerSheet(token);
-            if (!sheet) {
-              sheet = await createTrackerSpreadsheet(token);
-            }
-            setSheetInfo(sheet);
-          }
-          await triggerSheetSync(token, sheet, cards, transactions);
-        } catch (e) {
-          console.error('Error during auto sheet init:', e);
-        }
-      },
-      () => {
-        setUser(null);
-        setAccessToken(null);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  // Handle Google Login
-  const handleLogin = async () => {
-    try {
-      setIsLoggingIn(true);
-      const res = await googleSignIn();
-      if (res) {
-        setUser(res.user);
-        setAccessToken(res.accessToken);
-
-        // Find or create sheet
-        let sheet = await findExistingTrackerSheet(res.accessToken);
-        if (!sheet) {
-          sheet = await createTrackerSpreadsheet(res.accessToken);
-        }
-        setSheetInfo(sheet);
-        await triggerSheetSync(res.accessToken, sheet, cards, transactions);
-        showToast('เชื่อมต่อ Google Sheets สำเร็จ! บันทึกข้อมูลเรียบร้อยแล้ว');
-      }
-    } catch (err: any) {
-      if (
-        err?.code === 'auth/popup-closed-by-user' ||
-        err?.code === 'auth/cancelled-popup-request'
-      ) {
-        return;
-      }
-      console.warn('Login warning:', err?.message || err);
-      showToast('เข้าสู่ระบบไม่สำเร็จ: ' + (err.message || 'โปรดลองใหม่อีกครั้ง'));
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    setUser(null);
-    setAccessToken(null);
-    showToast('ออกจากระบบแล้ว');
-  };
-
-  // Create fresh spreadsheet on demand
-  const handleCreateNewSheet = async () => {
-    const token = accessToken || (await getAccessToken());
-    if (!token) {
-      handleLogin();
-      return;
-    }
-    try {
-      setIsSyncing(true);
-      const sheet = await createTrackerSpreadsheet(token);
-      setSheetInfo(sheet);
-      await triggerSheetSync(token, sheet, cards, transactions);
-      showToast('สร้าง Google Sheet ใหม่และเชื่อมต่อเรียบร้อยแล้ว!');
-    } catch (err: any) {
-      console.warn('Sheet creation warning:', err);
-      showToast('สร้างชีตไม่สำเร็จ: ' + err.message);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  // Manual sync button
-  const handleManualSync = async () => {
-    const token = accessToken || (await getAccessToken());
-    if (!token || !sheetInfo) {
-      handleLogin();
-      return;
-    }
-    await triggerSheetSync(token, sheetInfo, cards, transactions);
-  };
 
   // Add / Edit Transaction
   const handleSaveTransaction = (
@@ -448,32 +300,20 @@ export default function App() {
               }
             : t
         );
-        showToast('แก้ไขรายการใช้จ่ายเรียบร้อยแล้ว');
-      }
-
-      // If user also requested autoGenerateRemaining for this plan
-      if (txData.isInstallment && options?.autoGenerateRemaining) {
-        const { updatedTransactions, addedCount } = autoPopulateMissingInstallments(updatedTxs);
-        if (addedCount > 0) {
-          updatedTxs = updatedTransactions;
-          showToast(`สร้างรายการรอบบิลถัดไปอัตโนมัติเพิ่ม ${addedCount} งวด`);
-        }
+        showToast('แก้ไขข้อมูลรายการใช้จ่ายเรียบร้อยแล้ว');
       }
     } else {
       // New Transaction
-      if (txData.isInstallment) {
-        const autoGen = options?.autoGenerateRemaining !== false;
-        const series = generateInstallmentSeries(txData, autoGen);
-        updatedTxs = [...series, ...transactions];
-        if (series.length > 1) {
-          showToast(`บันทึกรายการและสร้างรอบบิลถัดไปอัตโนมัติครบ ${series.length} งวดแล้ว`);
-        } else {
-          showToast('บันทึกรายการผ่อนชำระเรียบร้อยแล้ว');
-        }
+      if (txData.isInstallment && options?.autoGenerateRemaining) {
+        const fullSeries = generateInstallmentSeries(txData, true);
+        updatedTxs = [...transactions, ...fullSeries];
+        showToast(
+          `บันทึกรายการผ่อนชำระและสร้างครบ ${fullSeries.length} งวดล่วงหน้าเรียบร้อยแล้ว`
+        );
       } else {
         const newTx: Transaction = {
           ...txData,
-          id: 'tx-' + Date.now(),
+          id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
           createdAt: new Date().toISOString(),
         };
         updatedTxs = [newTx, ...transactions];
@@ -482,11 +322,6 @@ export default function App() {
     }
 
     setTransactions(updatedTxs);
-
-    // Auto-sync to Google Sheets if connected
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, cards, updatedTxs);
-    }
   };
 
   // Toggle Transaction Paid status
@@ -495,9 +330,6 @@ export default function App() {
       t.id === txId ? { ...t, isPaid: !t.isPaid } : t
     );
     setTransactions(updated);
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, cards, updated);
-    }
   };
 
   // Mark all transactions of a card in a cycle as paid
@@ -514,10 +346,6 @@ export default function App() {
 
     setTransactions(updated);
     showToast(`บันทึกชำระยอดรอบบิล ${formatThaiMonth(cycleMonth)} ของ ${card?.name || 'บัตร'} เรียบร้อยแล้ว`);
-
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, cards, updated);
-    }
   };
 
   // Unmark all transactions of a card in a cycle
@@ -533,13 +361,9 @@ export default function App() {
 
     setTransactions(updated);
     showToast(`ยกเลิกสถานะชำระรอบบิล ${formatThaiMonth(cycleMonth)} ของ ${card?.name || 'บัตร'} แล้ว`);
-
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, cards, updated);
-    }
   };
 
-  // Mark all transactions across all cards for the entire month as paid (Requirement 2)
+  // Mark all transactions across all cards for the entire month as paid
   const handleMarkMonthPaid = (cycleMonth: string) => {
     const todayStr = new Date().toISOString().split('T')[0];
     let affectedCount = 0;
@@ -554,10 +378,6 @@ export default function App() {
 
     setTransactions(updated);
     showToast(`บันทึกชำระยอดรอบเดือน ${formatThaiMonth(cycleMonth)} ครบทุกบัตรเรียบร้อยแล้ว (${affectedCount} รายการ)`);
-
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, cards, updated);
-    }
   };
 
   // Unmark all transactions for the entire month
@@ -572,10 +392,6 @@ export default function App() {
 
     setTransactions(updated);
     showToast(`ยกเลิกสถานะชำระรอบเดือน ${formatThaiMonth(cycleMonth)} ทุกรายการแล้ว`);
-
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, cards, updated);
-    }
   };
 
   // Delete Transaction with Confirmation Modal
@@ -593,8 +409,8 @@ export default function App() {
         ? `คุณต้องการลบรายการผ่อนชำระ "${tx.title}" (งวดที่ ${tx.currentInstallment || 1}/${tx.totalInstallments || 1}) ใช่หรือไม่? แผนนี้มีทั้งหมด ${groupCount} งวดในระบบ`
         : `คุณต้องการลบรายการ "${tx.title}" ยอดเงิน ${formatThaiCurrency(tx.amount)} ใช่หรือไม่?`,
       detail: isPlan
-        ? `สามารถเลือกลบเฉพาะงวดนี้ หรือลบทุกงวดในแผนผ่อนชำระนี้ออกจากระบบและ Google Sheets ได้`
-        : `การดำเนินการนี้จะอัปเดตและลบรายการออกจาก Google Sheets ด้วย`,
+        ? `สามารถเลือกลบเฉพาะงวดนี้ หรือลบทุกงวดในแผนผ่อนชำระนี้ออกจากระบบได้`
+        : `รายการนี้จะถูกลบออกจากระบบอย่างถาวร`,
       confirmLabel: isPlan && groupCount > 1 ? `ลบทุกงวดในแผน (${groupCount} งวด)` : 'ลบรายการนี้',
       secondaryAction:
         isPlan && groupCount > 1
@@ -605,10 +421,6 @@ export default function App() {
                 setTransactions(updated);
                 showToast(`ลบเฉพาะงวดที่ ${tx.currentInstallment || 1} เรียบร้อยแล้ว`);
                 setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
-
-                if (accessToken && sheetInfo) {
-                  triggerSheetSync(accessToken, sheetInfo, cards, updated);
-                }
               },
             }
           : undefined,
@@ -624,10 +436,6 @@ export default function App() {
             : 'ลบรายการใช้จ่ายเรียบร้อยแล้ว'
         );
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
-
-        if (accessToken && sheetInfo) {
-          triggerSheetSync(accessToken, sheetInfo, cards, updated);
-        }
       },
     });
   };
@@ -652,10 +460,6 @@ export default function App() {
     }
 
     setCards(updatedCards);
-
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, updatedCards, transactions);
-    }
   };
 
   // Delete Card with Confirmation Modal
@@ -667,7 +471,7 @@ export default function App() {
       message: `คุณต้องการลบบัตร "${card.name} (•••• ${card.last4})"${
         txCount > 0 ? ` พร้อมรายการใช้จ่ายที่ผูกอยู่ ${txCount} รายการ` : ''
       } ใช่หรือไม่?`,
-      detail: 'ข้อมูลบัตรนี้จะถูกลบออกจากระบบและ Google Sheets',
+      detail: 'ข้อมูลบัตรนี้และรายการที่เกี่ยวข้องจะถูกลบออกจากระบบ',
       confirmLabel: 'ยืนยันลบบัตร',
       onConfirm: () => {
         const updatedCards = cards.filter((c) => c.id !== card.id);
@@ -677,10 +481,6 @@ export default function App() {
         if (selectedCardId === card.id) setSelectedCardId(null);
         showToast(`ลบบัตร ${card.name} เรียบร้อยแล้ว`);
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
-
-        if (accessToken && sheetInfo) {
-          triggerSheetSync(accessToken, sheetInfo, updatedCards, updatedTxs);
-        }
       },
     });
   };
@@ -690,9 +490,6 @@ export default function App() {
     setCards(newCards);
     localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(newCards));
     showToast('จัดลำดับบัตรเครดิตเรียบร้อยแล้ว');
-    if (accessToken && sheetInfo) {
-      triggerSheetSync(accessToken, sheetInfo, newCards, transactions);
-    }
   };
 
   return (
@@ -708,37 +505,43 @@ export default function App() {
           : undefined
       }
     >
-      {/* Background Dimming & Blur Overlay Layer */}
+      {/* Background Dimming & Blur Overlay for high readability */}
       {bgImage && (
         <div
           className="fixed inset-0 pointer-events-none transition-all duration-300 z-0"
           style={{
-            backgroundColor: `rgba(11, 15, 25, ${bgOpacity / 100})`,
-            backdropFilter: bgBlur > 0 ? `blur(${bgBlur}px)` : undefined,
+            backgroundColor: `rgba(11, 15, 25, ${bgOpacity})`,
+            backdropFilter: bgBlur > 0 ? `blur(${bgBlur}px)` : 'none',
           }}
         />
       )}
 
-      {/* Main app body */}
+      {/* Main Content Wrapper (Relative to sit above background overlay) */}
       <div className="relative z-10 flex flex-col min-h-screen">
-        {/* Toast Notification */}
-        {toastMessage && (
-          <div className="fixed bottom-6 right-6 z-50 p-4 rounded-2xl bg-slate-800/95 border border-indigo-500/40 text-slate-100 text-sm shadow-2xl shadow-black/60 flex items-center gap-3 backdrop-blur-md animate-in slide-in-from-bottom-5">
-            <div className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-            <span>{toastMessage}</span>
-          </div>
-        )}
+      {/* Toast Alert */}
+      {toastMessage && (
+        <aside
+          aria-live="polite"
+          className="fixed bottom-5 right-5 z-50 bg-slate-800 text-white px-4 py-3 rounded-2xl shadow-2xl border border-indigo-500/50 flex items-center gap-3 animate-in slide-in-from-bottom duration-200"
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0 animate-ping" />
+          <span className="text-sm font-medium">{toastMessage}</span>
+          <button
+            type="button"
+            onClick={() => setToastMessage(null)}
+            className="text-slate-400 hover:text-white text-xs ml-2 cursor-pointer"
+          >
+            ✕
+          </button>
+        </aside>
+      )}
 
-      {/* Top Header */}
+      {/* Header */}
       <Header
-        user={user}
-        isLoggingIn={isLoggingIn}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
-        sheetInfo={sheetInfo}
-        isSyncing={isSyncing}
-        onSyncWithSheets={handleManualSync}
-        onOpenSheetModal={() => setIsSheetModalOpen(true)}
+        brandName={brandName}
+        brandLogo={brandLogo}
+        brandTagline={brandTagline}
+        onOpenBrandModal={() => setIsBrandModalOpen(true)}
         onOpenNewTxModal={() => {
           setEditingTx(null);
           setIsNewTxModalOpen(true);
@@ -748,6 +551,7 @@ export default function App() {
           setIsCardModalOpen(true);
         }}
         onOpenBackgroundModal={() => setIsBgModalOpen(true)}
+        onOpenExportModal={() => setIsExportModalOpen(true)}
         hasCustomBg={Boolean(bgImage)}
         urgentDueCount={urgentDueCount}
         activeTab={activeTab}
@@ -830,29 +634,27 @@ export default function App() {
               />
             </section>
 
-            {/* 3. Monthly Spending Summary */}
-            <section aria-label="Monthly Spending Summary">
+            {/* 3. Monthly Cycle Summary & Analytics */}
+            <section aria-label="Monthly Expense Summary">
               <MonthlySummary
-                currentMonth={currentMonth}
-                availableMonths={availableMonths}
-                onChangeMonth={(m) => setCurrentMonth(m)}
                 stats={monthlyStats}
                 cards={cards}
-                transactions={transactions}
-                installmentCount={installmentCount}
-                totalInstallmentMonthly={totalInstallmentMonthly}
-                selectedCategory={selectedCategory}
-                onSelectCategory={setSelectedCategory}
-                onOpenInstallmentModal={() => setIsInstallmentModalOpen(true)}
+                currentMonth={currentMonth}
+                availableMonths={availableMonths}
+                onChangeMonth={(m: string) => setCurrentMonth(m)}
                 onMarkMonthPaid={handleMarkMonthPaid}
                 onUnmarkMonthPaid={handleUnmarkMonthPaid}
                 onMarkCardPaid={handleMarkCardPaid}
                 onUnmarkCardPaid={handleUnmarkCardPaid}
+                transactions={transactions}
+                installmentCount={installmentCount}
+                totalInstallmentMonthly={totalInstallmentMonthly}
+                onOpenInstallmentModal={() => setIsInstallmentModalOpen(true)}
               />
             </section>
 
-            {/* 4. Transactions List */}
-            <section aria-label="Transactions List">
+            {/* 4. Transactions List & Filter */}
+            <section aria-label="Transaction Records">
               <TransactionList
                 transactions={transactions}
                 cards={cards}
@@ -879,20 +681,8 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-950/60 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© 2026 CardPulse • ระบบติดตามค่าใช้จ่ายบัตรเครดิตและแจ้งเตือนครบกำหนดชำระ</p>
-          <div className="flex items-center gap-4 text-slate-400">
-            <span>บันทึกข้อมูลแบบเรียลไทม์ใน Google Sheets</span>
-            {sheetInfo?.spreadsheetUrl && (
-              <a
-                href={sheetInfo.spreadsheetUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-indigo-400 hover:text-indigo-300 underline"
-              >
-                เปิดสเปรดชีต ↗
-              </a>
-            )}
-          </div>
+          <p>© 2026 {brandName} • {brandTagline}</p>
+          <p className="text-slate-500">ระบบติดตามการใช้จ่ายและบริหารจัดการบัตรเครดิต</p>
         </div>
       </footer>
 
@@ -919,13 +709,25 @@ export default function App() {
         onSave={handleSaveCard}
       />
 
-      <GoogleSheetModal
-        isOpen={isSheetModalOpen}
-        onClose={() => setIsSheetModalOpen(false)}
-        sheetInfo={sheetInfo}
-        isSyncing={isSyncing}
-        onSync={handleManualSync}
-        onCreateNewSheet={handleCreateNewSheet}
+      <ExportCsvModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        transactions={transactions}
+        cards={cards}
+        availableMonths={availableMonths}
+        currentSelectedMonth={currentMonth}
+        brandName={brandName}
+        brandLogo={brandLogo}
+        brandTagline={brandTagline}
+      />
+
+      <BrandCustomizationModal
+        isOpen={isBrandModalOpen}
+        onClose={() => setIsBrandModalOpen(false)}
+        brandName={brandName}
+        brandLogo={brandLogo}
+        brandTagline={brandTagline}
+        onSaveBrand={handleSaveBrand}
       />
 
       <InstallmentPlansModal

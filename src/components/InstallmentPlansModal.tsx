@@ -408,7 +408,7 @@ export const InstallmentPlansModal: React.FC<InstallmentPlansModalProps> = ({
         <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between shrink-0">
           <div className="text-xs text-slate-400 flex items-center gap-1.5">
             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            <span>รอบบิลถัดไปถูกเชื่อมโยงและซิงค์กับ Google Sheets อัตโนมัติ</span>
+            <span>รอบบิลถัดไปถูกเชื่อมโยงและคำนวณตามวันตัดรอบของบัตรอัตโนมัติ</span>
           </div>
 
           <button

@@ -29,6 +29,7 @@ import {
   Heart,
   Globe,
   MoreHorizontal,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 interface TransactionListProps {
@@ -42,6 +43,7 @@ interface TransactionListProps {
   onDeleteTransaction: (tx: Transaction) => void;
   onOpenNewTxModal: () => void;
   onOpenInstallmentModal?: () => void;
+  onOpenExportModal?: () => void;
 }
 
 export const TransactionList: React.FC<TransactionListProps> = ({
@@ -55,6 +57,7 @@ export const TransactionList: React.FC<TransactionListProps> = ({
   onDeleteTransaction,
   onOpenNewTxModal,
   onOpenInstallmentModal,
+  onOpenExportModal,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [monthFilter, setMonthFilter] = useState<string>('all');
@@ -203,7 +206,8 @@ export const TransactionList: React.FC<TransactionListProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+
           {onOpenInstallmentModal && (
             <button
               type="button"
