@@ -1,0 +1,241 @@
+{
+  "entities": {
+    "userProfile": {
+      "title": "UserProfile",
+      "description": "User preferences, brand identity, and theme settings",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The Firebase Auth UID of the user"
+        },
+        "brandName": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Custom brand name displayed in header"
+        },
+        "brandLogo": {
+          "type": "string",
+          "maxLength": 100000,
+          "description": "Optional base64 or URL logo string"
+        },
+        "brandTagline": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Custom tagline displayed in header"
+        },
+        "bgImage": {
+          "type": "string",
+          "maxLength": 500000,
+          "description": "Custom background image data URL"
+        },
+        "bgOpacity": {
+          "type": "number",
+          "description": "Background image opacity overlay (0 to 1)"
+        },
+        "bgBlur": {
+          "type": "number",
+          "description": "Background image blur intensity in pixels"
+        },
+        "bgPosition": {
+          "type": "object",
+          "description": "Positioning and scaling coordinates for background image"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when profile was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when profile was last updated"
+        }
+      },
+      "required": ["userId"]
+    },
+    "creditCard": {
+      "title": "CreditCard",
+      "description": "Credit card metadata including billing cutoff and payment due dates",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique credit card identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Auth UID of the owner"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Card brand/product name"
+        },
+        "bank": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Issuing bank name"
+        },
+        "last4": {
+          "type": "string",
+          "maxLength": 10,
+          "description": "Last 4 digits or card identifier"
+        },
+        "creditLimit": {
+          "type": "number",
+          "description": "Total credit line amount"
+        },
+        "billingCutoffDay": {
+          "type": "integer",
+          "description": "Day of month (1-31) when statement cuts off"
+        },
+        "paymentDueDay": {
+          "type": "integer",
+          "description": "Day of month (1-31) when bill payment is due"
+        },
+        "colorGradient": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Visual gradient or style representation"
+        },
+        "accentColor": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Hex or theme color for icons and accents"
+        },
+        "cardType": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Payment network (VISA, MasterCard, JCB, etc.)"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "inactive"],
+          "description": "Active state of the card"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last updated timestamp"
+        }
+      },
+      "required": ["id", "userId", "name", "bank", "billingCutoffDay", "paymentDueDay"]
+    },
+    "transaction": {
+      "title": "Transaction",
+      "description": "Credit card charge or installment payment record",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique transaction record identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Auth UID of the owner"
+        },
+        "cardId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "ID of the associated credit card"
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "description": "Date of transaction YYYY-MM-DD"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Merchant or transaction title"
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Expense category (food, shopping, supermarket, etc.)"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Amount in THB"
+        },
+        "billingCycleMonth": {
+          "type": "string",
+          "maxLength": 7,
+          "description": "Billing cycle month YYYY-MM"
+        },
+        "isInstallment": {
+          "type": "boolean",
+          "description": "Whether this charge is part of an installment plan"
+        },
+        "totalInstallments": {
+          "type": "integer",
+          "description": "Total installment terms"
+        },
+        "currentInstallment": {
+          "type": "integer",
+          "description": "Current installment index (e.g. 1)"
+        },
+        "monthlyInstallmentAmount": {
+          "type": "number",
+          "description": "Amount per installment month"
+        },
+        "installmentGroupId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Identifier grouping all installments of the same purchase"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "User notes"
+        },
+        "tags": {
+          "type": "array",
+          "description": "Tags list (up to 10 tags)"
+        },
+        "isPaid": {
+          "type": "boolean",
+          "description": "Payment status flag"
+        },
+        "paidDate": {
+          "type": "string",
+          "maxLength": 20,
+          "description": "Date statement or item was marked paid"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp"
+        }
+      },
+      "required": ["id", "userId", "cardId", "date", "title", "amount", "billingCycleMonth"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "User preferences and brand styling"
+    },
+    "/users/{userId}/cards/{cardId}": {
+      "schema": "creditCard",
+      "description": "User's credit card definitions and billing cycle configurations"
+    },
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": "transaction",
+      "description": "Credit card expenditure entries and installment plans"
+    }
+  }
+}

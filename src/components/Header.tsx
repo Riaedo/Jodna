@@ -15,6 +15,9 @@ import {
   FileText,
 } from 'lucide-react';
 
+import { User } from 'firebase/auth';
+import { Cloud, CloudCheck, LogIn, LogOut, Loader2 } from 'lucide-react';
+
 interface HeaderProps {
   brandName?: string;
   brandLogo?: string | null;
@@ -28,6 +31,10 @@ interface HeaderProps {
   urgentDueCount: number;
   activeTab: 'tracker' | 'dashboard';
   onTabChange: (tab: 'tracker' | 'dashboard') => void;
+  currentUser?: User | null;
+  onLogin?: () => void;
+  onLogout?: () => void;
+  isSyncing?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -43,6 +50,10 @@ export const Header: React.FC<HeaderProps> = ({
   urgentDueCount,
   activeTab,
   onTabChange,
+  currentUser,
+  onLogin,
+  onLogout,
+  isSyncing,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -184,7 +195,88 @@ export const Header: React.FC<HeaderProps> = ({
                       <Settings className="w-3.5 h-3.5 text-indigo-400" />
                       <span>เมนูและการตั้งค่า</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">{brandName} Menu</span>
+                    <div className="flex items-center gap-1.5">
+                      {isSyncing && (
+                        <span className="flex items-center gap-1 text-[10px] text-indigo-400 animate-pulse">
+                          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                          ซิงก์...
+                        </span>
+                      )}
+                      <span className="text-[10px] text-slate-400">{brandName}</span>
+                    </div>
+                  </div>
+
+                  {/* 0. Firebase Cloud Firestore & Account Sync */}
+                  <div className="p-2.5 rounded-xl bg-gradient-to-br from-indigo-950/60 to-slate-850 border border-indigo-500/30 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {currentUser?.photoURL ? (
+                          <img
+                            src={currentUser.photoURL}
+                            alt={currentUser.displayName || 'User'}
+                            className="w-7 h-7 rounded-full border border-indigo-400/40 object-cover shrink-0"
+                          />
+                        ) : (
+                          <div className="w-7 h-7 rounded-full bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-300 text-xs font-bold shrink-0">
+                            <Cloud className="w-3.5 h-3.5 text-indigo-400" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          {currentUser ? (
+                            <>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-semibold text-white truncate block">
+                                  {currentUser.displayName || 'ผู้ใช้งาน Firebase'}
+                                </span>
+                                <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                  Firestore เชื่อมต่อแล้ว
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-slate-400 truncate block">
+                                {currentUser.email}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-xs font-semibold text-white block">
+                                Cloud Firestore ซิงก์
+                              </span>
+                              <span className="text-[10px] text-slate-400 block">
+                                สำรองและซิงก์ข้อมูลข้ามอุปกรณ์
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {currentUser ? (
+                      <div className="pt-1 flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMenuOpen(false);
+                            onLogout && onLogout();
+                          }}
+                          className="flex items-center gap-1 text-[11px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                        >
+                          <LogOut className="w-3 h-3" />
+                          <span>ออกจากระบบ</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onLogin && onLogin();
+                        }}
+                        className="w-full mt-1 py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-sm cursor-pointer"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>เข้าสู่ระบบ Google เพื่อเชื่อมต่อ Cloud</span>
+                      </button>
+                    )}
                   </div>
 
                   {/* 1. Export Data (CSV & PDF) - ONLY accessible in hamburger button */}

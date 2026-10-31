@@ -38,6 +38,21 @@ import { BackgroundModal, BackgroundPosition } from './components/BackgroundModa
 import { ExportCsvModal } from './components/ExportCsvModal';
 import { BrandCustomizationModal } from './components/BrandCustomizationModal';
 import { CreditCard as CardIcon, BarChart3 } from 'lucide-react';
+import { User } from 'firebase/auth';
+import {
+  subscribeAuth,
+  loginWithGoogle,
+  logoutUser,
+  subscribeUserCards,
+  saveUserCardToFirestore,
+  deleteUserCardFromFirestore,
+  subscribeUserTransactions,
+  saveUserTransactionToFirestore,
+  deleteUserTransactionFromFirestore,
+  subscribeUserProfile,
+  saveUserProfileToFirestore,
+  syncInitialDataToCloud,
+} from './services/firebase';
 
 const STORAGE_KEY_CARDS = 'cardpulse_cards_v1';
 const STORAGE_KEY_TXS = 'cardpulse_transactions_v1';
@@ -155,6 +170,90 @@ export default function App() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
+  // Firebase Auth and Cloud Sync state
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // Subscribe to Firebase Auth changes
+  useEffect(() => {
+    const unsubscribe = subscribeAuth((user) => {
+      setCurrentUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync with Firestore when user is authenticated
+  useEffect(() => {
+    if (!currentUser) return;
+    setIsSyncing(true);
+
+    let isInitialLoad = true;
+
+    // 1. Subscribe to Cards collection
+    const unsubCards = subscribeUserCards(currentUser.uid, (cloudCards) => {
+      if (cloudCards.length > 0) {
+        setCards(cloudCards);
+      } else if (isInitialLoad && cards.length > 0) {
+        // First login with existing local data -> Seed to cloud
+        syncInitialDataToCloud(currentUser.uid, cards, transactions).catch(console.error);
+      }
+      setIsSyncing(false);
+    });
+
+    // 2. Subscribe to Transactions collection
+    const unsubTxs = subscribeUserTransactions(currentUser.uid, (cloudTxs) => {
+      if (cloudTxs.length > 0) {
+        setTransactions(cloudTxs);
+      }
+      setIsSyncing(false);
+    });
+
+    // 3. Subscribe to User Profile settings
+    const unsubProfile = subscribeUserProfile(currentUser.uid, (profile) => {
+      if (profile) {
+        if (profile.brandName) setBrandName(profile.brandName);
+        if (profile.brandLogo !== undefined) setBrandLogo(profile.brandLogo);
+        if (profile.brandTagline) setBrandTagline(profile.brandTagline);
+        if (profile.bgImage !== undefined) setBgImage(profile.bgImage);
+        if (profile.bgOpacity !== undefined) setBgOpacity(profile.bgOpacity);
+        if (profile.bgBlur !== undefined) setBgBlur(profile.bgBlur);
+        if (profile.bgPosition) setBgPosition(profile.bgPosition);
+      }
+    });
+
+    isInitialLoad = false;
+
+    return () => {
+      unsubCards();
+      unsubTxs();
+      unsubProfile();
+    };
+  }, [currentUser]);
+
+  // Auth Handlers
+  const handleLogin = async () => {
+    try {
+      setIsSyncing(true);
+      const user = await loginWithGoogle();
+      if (user) {
+        showToast(`เข้าสู่ระบบในชื่อ ${user.displayName || user.email} สำเร็จ ข้อมูลกำลังซิงก์กับ Firebase`);
+      }
+    } catch (err: any) {
+      showToast(err.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+      showToast('ออกจากระบบเรียบร้อยแล้ว');
+    } catch (err: any) {
+      showToast(err.message || 'เกิดข้อผิดพลาดในการออกจากระบบ');
+    }
+  };
+
   // Save to localStorage when state changes
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(cards));
@@ -189,6 +288,15 @@ export default function App() {
       localStorage.removeItem(STORAGE_KEY_BG_POSITION);
     }
 
+    if (currentUser) {
+      saveUserProfileToFirestore(currentUser.uid, {
+        bgImage: newBg,
+        bgOpacity: newOpacity,
+        bgBlur: newBlur,
+        bgPosition: newPosition,
+      }).catch(console.error);
+    }
+
     showToast(newBg ? 'บันทึกภาพพื้นหลังเรียบร้อยแล้ว' : 'รีเซ็ตภาพพื้นหลังเป็นค่าเริ่มต้นแล้ว');
   };
 
@@ -209,6 +317,14 @@ export default function App() {
       localStorage.removeItem(STORAGE_KEY_BRAND_LOGO);
     }
     localStorage.setItem(STORAGE_KEY_BRAND_TAGLINE, newTagline);
+
+    if (currentUser) {
+      saveUserProfileToFirestore(currentUser.uid, {
+        brandName: newName,
+        brandLogo: newLogo,
+        brandTagline: newTagline,
+      }).catch(console.error);
+    }
 
     showToast('บันทึกการตั้งค่าชื่อแบรนด์และโลโก้เรียบร้อยแล้ว');
   };
@@ -277,7 +393,7 @@ export default function App() {
         // Update all transactions in this installment plan
         updatedTxs = transactions.map((t) => {
           if (t.installmentGroupId === txData.installmentGroupId) {
-            return {
+            const updatedItem: Transaction = {
               ...t,
               title: txData.title,
               cardId: txData.cardId,
@@ -287,19 +403,25 @@ export default function App() {
               totalInstallments: txData.totalInstallments,
               monthlyInstallmentAmount: txData.monthlyInstallmentAmount,
             };
+            if (currentUser) {
+              saveUserTransactionToFirestore(currentUser.uid, updatedItem).catch(console.error);
+            }
+            return updatedItem;
           }
           return t.id === txData.id ? { ...t, ...txData } : t;
         });
         showToast('อัปเดตข้อมูลแผนผ่อนชำระทุกงวดเรียบร้อยแล้ว');
       } else {
-        updatedTxs = transactions.map((t) =>
-          t.id === txData.id
-            ? {
-                ...t,
-                ...txData,
-              }
-            : t
-        );
+        updatedTxs = transactions.map((t) => {
+          if (t.id === txData.id) {
+            const updatedItem: Transaction = { ...t, ...txData };
+            if (currentUser) {
+              saveUserTransactionToFirestore(currentUser.uid, updatedItem).catch(console.error);
+            }
+            return updatedItem;
+          }
+          return t;
+        });
         showToast('แก้ไขข้อมูลรายการใช้จ่ายเรียบร้อยแล้ว');
       }
     } else {
@@ -307,6 +429,11 @@ export default function App() {
       if (txData.isInstallment && options?.autoGenerateRemaining) {
         const fullSeries = generateInstallmentSeries(txData, true);
         updatedTxs = [...transactions, ...fullSeries];
+        if (currentUser) {
+          fullSeries.forEach((item) => {
+            saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
+          });
+        }
         showToast(
           `บันทึกรายการผ่อนชำระและสร้างครบ ${fullSeries.length} งวดล่วงหน้าเรียบร้อยแล้ว`
         );
@@ -317,6 +444,9 @@ export default function App() {
           createdAt: new Date().toISOString(),
         };
         updatedTxs = [newTx, ...transactions];
+        if (currentUser) {
+          saveUserTransactionToFirestore(currentUser.uid, newTx).catch(console.error);
+        }
         showToast('บันทึกรายการใช้จ่ายใหม่เรียบร้อยแล้ว');
       }
     }
@@ -326,9 +456,16 @@ export default function App() {
 
   // Toggle Transaction Paid status
   const handleTogglePaid = (txId: string) => {
-    const updated = transactions.map((t) =>
-      t.id === txId ? { ...t, isPaid: !t.isPaid } : t
-    );
+    const updated = transactions.map((t) => {
+      if (t.id === txId) {
+        const item = { ...t, isPaid: !t.isPaid };
+        if (currentUser) {
+          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
+        }
+        return item;
+      }
+      return t;
+    });
     setTransactions(updated);
   };
 
@@ -339,7 +476,11 @@ export default function App() {
     const updated = transactions.map((t) => {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if (t.cardId === cardId && (txCycle === cycleMonth || t.billingCycleMonth === cycleMonth)) {
-        return { ...t, isPaid: true, paidDate: todayStr };
+        const item = { ...t, isPaid: true, paidDate: todayStr };
+        if (currentUser) {
+          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
+        }
+        return item;
       }
       return t;
     });
@@ -354,7 +495,11 @@ export default function App() {
     const updated = transactions.map((t) => {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if (t.cardId === cardId && (txCycle === cycleMonth || t.billingCycleMonth === cycleMonth)) {
-        return { ...t, isPaid: false, paidDate: undefined };
+        const item = { ...t, isPaid: false, paidDate: undefined };
+        if (currentUser) {
+          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
+        }
+        return item;
       }
       return t;
     });
@@ -371,7 +516,11 @@ export default function App() {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if ((txCycle === cycleMonth || t.billingCycleMonth === cycleMonth) && !isFutureInstallmentHidden(t, cards)) {
         if (!t.isPaid) affectedCount++;
-        return { ...t, isPaid: true, paidDate: todayStr };
+        const item = { ...t, isPaid: true, paidDate: todayStr };
+        if (currentUser) {
+          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
+        }
+        return item;
       }
       return t;
     });
@@ -385,7 +534,11 @@ export default function App() {
     const updated = transactions.map((t) => {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if (txCycle === cycleMonth || t.billingCycleMonth === cycleMonth) {
-        return { ...t, isPaid: false, paidDate: undefined };
+        const item = { ...t, isPaid: false, paidDate: undefined };
+        if (currentUser) {
+          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
+        }
+        return item;
       }
       return t;
     });
@@ -419,6 +572,9 @@ export default function App() {
               onClick: () => {
                 const updated = transactions.filter((t) => t.id !== tx.id);
                 setTransactions(updated);
+                if (currentUser) {
+                  deleteUserTransactionFromFirestore(currentUser.uid, tx.id).catch(console.error);
+                }
                 showToast(`ลบเฉพาะงวดที่ ${tx.currentInstallment || 1} เรียบร้อยแล้ว`);
                 setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
               },
@@ -430,6 +586,15 @@ export default function App() {
             ? transactions.filter((t) => t.installmentGroupId !== tx.installmentGroupId)
             : transactions.filter((t) => t.id !== tx.id);
         setTransactions(updated);
+        if (currentUser) {
+          if (isPlan && groupCount > 1) {
+            planGroup.forEach((p) => {
+              deleteUserTransactionFromFirestore(currentUser.uid, p.id).catch(console.error);
+            });
+          } else {
+            deleteUserTransactionFromFirestore(currentUser.uid, tx.id).catch(console.error);
+          }
+        }
         showToast(
           isPlan && groupCount > 1
             ? `ลบแผนผ่อนชำระครบทั้ง ${groupCount} งวดเรียบร้อยแล้ว`
@@ -443,23 +608,28 @@ export default function App() {
   // Add / Edit Card
   const handleSaveCard = (cardData: Omit<CreditCard, 'id'> & { id?: string }) => {
     let updatedCards: CreditCard[];
+    let targetCard: CreditCard;
     if (cardData.id) {
       // Edit
+      targetCard = { ...cardData } as CreditCard;
       updatedCards = cards.map((c) =>
         c.id === cardData.id ? ({ ...c, ...cardData } as CreditCard) : c
       );
       showToast('แก้ไขข้อมูลบัตรเครดิตเรียบร้อยแล้ว');
     } else {
       // New
-      const newCard: CreditCard = {
+      targetCard = {
         ...cardData,
         id: 'card-' + Date.now(),
       };
-      updatedCards = [...cards, newCard];
+      updatedCards = [...cards, targetCard];
       showToast('เพิ่มบัตรเครดิตใหม่เรียบร้อยแล้ว');
     }
 
     setCards(updatedCards);
+    if (currentUser) {
+      saveUserCardToFirestore(currentUser.uid, targetCard).catch(console.error);
+    }
   };
 
   // Delete Card with Confirmation Modal
@@ -479,6 +649,12 @@ export default function App() {
         setCards(updatedCards);
         setTransactions(updatedTxs);
         if (selectedCardId === card.id) setSelectedCardId(null);
+        if (currentUser) {
+          deleteUserCardFromFirestore(currentUser.uid, card.id).catch(console.error);
+          transactions
+            .filter((t) => t.cardId === card.id)
+            .forEach((t) => deleteUserTransactionFromFirestore(currentUser.uid, t.id).catch(console.error));
+        }
         showToast(`ลบบัตร ${card.name} เรียบร้อยแล้ว`);
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
       },
@@ -556,6 +732,10 @@ export default function App() {
         urgentDueCount={urgentDueCount}
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        currentUser={currentUser}
+        onLogin={handleLogin}
+        onLogout={handleLogout}
+        isSyncing={isSyncing}
       />
 
       {/* Mobile Tab Bar */}

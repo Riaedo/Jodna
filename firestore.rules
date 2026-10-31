@@ -1,0 +1,135 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Catch-All Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity Validation Helpers
+    function isValidUserProfile(data, userId) {
+      return data.userId == userId
+        && (!('brandName' in data) || (data.brandName is string && data.brandName.size() <= 100))
+        && (!('brandLogo' in data) || (data.brandLogo is string && data.brandLogo.size() <= 200000))
+        && (!('brandTagline' in data) || (data.brandTagline is string && data.brandTagline.size() <= 200))
+        && (!('bgImage' in data) || (data.bgImage is string && data.bgImage.size() <= 600000))
+        && (!('bgOpacity' in data) || (data.bgOpacity is number && data.bgOpacity >= 0 && data.bgOpacity <= 1))
+        && (!('bgBlur' in data) || (data.bgBlur is number && data.bgBlur >= 0 && data.bgBlur <= 50))
+        && (!('bgPosition' in data) || data.bgPosition is map)
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function isValidCreditCard(data, userId) {
+      return data.userId == userId
+        && isValidId(data.id)
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.bank is string && data.bank.size() > 0 && data.bank.size() <= 100
+        && (!('last4' in data) || (data.last4 is string && data.last4.size() <= 10))
+        && (!('creditLimit' in data) || (data.creditLimit is number && data.creditLimit >= 0))
+        && data.billingCutoffDay is int && data.billingCutoffDay >= 1 && data.billingCutoffDay <= 31
+        && data.paymentDueDay is int && data.paymentDueDay >= 1 && data.paymentDueDay <= 31
+        && (!('colorGradient' in data) || (data.colorGradient is string && data.colorGradient.size() <= 200))
+        && (!('accentColor' in data) || (data.accentColor is string && data.accentColor.size() <= 50))
+        && (!('cardType' in data) || (data.cardType is string && data.cardType.size() <= 50))
+        && (!('status' in data) || (data.status in ['active', 'inactive']))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function isValidTransaction(data, userId) {
+      return data.userId == userId
+        && isValidId(data.id)
+        && isValidId(data.cardId)
+        && data.date is string && data.date.size() == 10
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.category is string && data.category.size() <= 50
+        && data.amount is number && data.amount >= 0
+        && data.billingCycleMonth is string && data.billingCycleMonth.size() == 7
+        && (!('isInstallment' in data) || data.isInstallment is bool)
+        && (!('totalInstallments' in data) || (data.totalInstallments is int && data.totalInstallments >= 1 && data.totalInstallments <= 60))
+        && (!('currentInstallment' in data) || (data.currentInstallment is int && data.currentInstallment >= 1 && data.currentInstallment <= 60))
+        && (!('monthlyInstallmentAmount' in data) || (data.monthlyInstallmentAmount is number && data.monthlyInstallmentAmount >= 0))
+        && (!('installmentGroupId' in data) || (data.installmentGroupId is string && data.installmentGroupId.size() <= 128))
+        && (!('note' in data) || (data.note is string && data.note.size() <= 500))
+        && (!('tags' in data) || (data.tags is list && data.tags.size() <= 10))
+        && (!('isPaid' in data) || data.isPaid is bool)
+        && (!('paidDate' in data) || (data.paidDate is string && data.paidDate.size() <= 20))
+        && (!('createdAt' in data) || data.createdAt is timestamp)
+        && (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // User profile & preferences
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow create: if isOwner(userId) && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().keys().hasAll(['userId'])
+        && (!('createdAt' in incoming()) || incoming().createdAt == request.time);
+      allow update: if isOwner(userId) && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().userId == existing().userId
+        && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        && (!('updatedAt' in incoming()) || incoming().updatedAt == request.time);
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // User's Credit Cards
+      match /cards/{cardId} {
+        allow get: if isOwner(userId) && isValidId(cardId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(cardId)
+          && incoming().id == cardId
+          && isValidCreditCard(incoming(), userId)
+          && incoming().keys().hasAll(['id', 'userId', 'name', 'bank', 'billingCutoffDay', 'paymentDueDay'])
+          && (!('createdAt' in incoming()) || incoming().createdAt == request.time);
+        allow update: if isOwner(userId) && isValidId(cardId)
+          && isValidCreditCard(incoming(), userId)
+          && incoming().id == existing().id
+          && incoming().userId == existing().userId
+          && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+          && (!('updatedAt' in incoming()) || incoming().updatedAt == request.time);
+        allow delete: if isOwner(userId) && isValidId(cardId);
+      }
+
+      // User's Transactions
+      match /transactions/{transactionId} {
+        allow get: if isOwner(userId) && isValidId(transactionId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(transactionId)
+          && incoming().id == transactionId
+          && isValidTransaction(incoming(), userId)
+          && incoming().keys().hasAll(['id', 'userId', 'cardId', 'date', 'title', 'amount', 'billingCycleMonth'])
+          && (!('createdAt' in incoming()) || incoming().createdAt == request.time);
+        allow update: if isOwner(userId) && isValidId(transactionId)
+          && isValidTransaction(incoming(), userId)
+          && incoming().id == existing().id
+          && incoming().userId == existing().userId
+          && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+          && (!('updatedAt' in incoming()) || incoming().updatedAt == request.time);
+        allow delete: if isOwner(userId) && isValidId(transactionId);
+      }
+    }
+  }
+}

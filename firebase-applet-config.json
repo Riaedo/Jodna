@@ -3,6 +3,7 @@
   "appId": "1:881575334440:web:67cdc6d318f546a5f15b1d",
   "apiKey": "AIzaSyAONglDA2Jss3-PCn4NKXeFFwg9XA8w6z8",
   "authDomain": "gen-lang-client-0967357802.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-creditcardrecord-d130ca53-bac9-4d31-b18a-c5ec1ec9582c",
   "storageBucket": "gen-lang-client-0967357802.firebasestorage.app",
   "messagingSenderId": "881575334440",
   "measurementId": "",
