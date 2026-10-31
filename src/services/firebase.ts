@@ -2,6 +2,8 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   User,
@@ -13,10 +15,13 @@ import {
   collection,
   setDoc,
   deleteDoc,
+  getDoc,
+  getDocs,
   onSnapshot,
   getDocFromServer,
   writeBatch,
   serverTimestamp,
+  runTransaction,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { CreditCard, Transaction } from '../types';
@@ -98,27 +103,146 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-// 4. Authentication Functions
-export const loginWithGoogle = async (): Promise<User | null> => {
+// 4. Browser Environment Detection (Task 4)
+export interface BrowserEnv {
+  isMobile: boolean;
+  isInAppBrowser: boolean;
+  inAppBrowserName?: string;
+  isIOS: boolean;
+  isAndroid: boolean;
+}
+
+export const detectBrowserEnv = (): BrowserEnv => {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return { isMobile: false, isInAppBrowser: false, isIOS: false, isAndroid: false };
+  }
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream;
+  const isAndroid = /Android/i.test(ua);
+  const isMobile = isIOS || isAndroid || /webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+
+  let isInAppBrowser = false;
+  let inAppBrowserName: string | undefined;
+
+  if (/Line\//i.test(ua)) {
+    isInAppBrowser = true;
+    inAppBrowserName = 'LINE';
+  } else if (/FBAN|FBAV/i.test(ua)) {
+    isInAppBrowser = true;
+    inAppBrowserName = 'Facebook';
+  } else if (/Instagram/i.test(ua)) {
+    isInAppBrowser = true;
+    inAppBrowserName = 'Instagram';
+  } else if (/MicroMessenger/i.test(ua)) {
+    isInAppBrowser = true;
+    inAppBrowserName = 'WeChat';
+  } else if (/Twitter/i.test(ua)) {
+    isInAppBrowser = true;
+    inAppBrowserName = 'Twitter/X';
+  }
+
+  return { isMobile, isInAppBrowser, inAppBrowserName, isIOS, isAndroid };
+};
+
+// Error Message Mapping (Task 2)
+export const getAuthErrorMessage = (error: any): string => {
+  const code = error?.code || '';
+  switch (code) {
+    case 'auth/popup-blocked':
+      return 'เบราว์เซอร์บล็อกหน้าต่าง Pop-up กำลังเปลี่ยนไปใช้การเข้าสู่ระบบแบบเต็มหน้าจอ...';
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+      return 'ยกเลิกการเข้าสู่ระบบแล้ว';
+    case 'auth/unauthorized-domain':
+      return 'โดเมนนี้ยังไม่ได้รับอนุญาตใน Firebase Console โปรดไปที่ Firebase Console > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมนของแอปนี้';
+    case 'auth/operation-not-allowed':
+      return 'ระบบ Google Sign-in ยังไม่เปิดใช้งานใน Firebase Console โปรดเปิดใช้งาน Google Provider ในเมนู Authentication Settings';
+    case 'auth/network-request-failed':
+      return 'ไม่สามารถเชื่อมต่อเครือข่ายได้ โปรดตรวจสอบสัญญาณอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง';
+    case 'auth/user-disabled':
+      return 'บัญชีผู้ใช้นี้ถูกระงับการใช้งาน โปรดติดต่อผู้ดูแลระบบ';
+    case 'auth/disallowed_useragent':
+      return 'Google ไม่อนุญาตให้ล็อกอินผ่านเบราว์เซอร์ภายในแอปเพื่อความปลอดภัย โปรดกดที่เมนู (•••) แล้วเลือก "เปิดใน Safari" หรือ "เปิดใน Chrome"';
+    default:
+      return error?.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google';
+  }
+};
+
+// Primary Login Function (Desktop: Popup, Mobile/Fallback: Redirect) (Task 1)
+export const loginWithGoogle = async (): Promise<{ user: User | null; redirectInitiated?: boolean }> => {
+  const env = detectBrowserEnv();
+
+  // If in-app browser is detected, throw actionable error for user
+  if (env.isInAppBrowser) {
+    const err = new Error(
+      `ตรวจพบการใช้งานผ่าน ${env.inAppBrowserName || 'In-app'} Browser ซึ่ง Google ไม่อนุญาตให้ล็อกอินเพื่อความปลอดภัย โปรดเปิดด้วย Safari หรือ Chrome`
+    );
+    (err as any).code = 'auth/disallowed_useragent';
+    throw err;
+  }
+
+  // Mobile browsers (iOS Safari, Android Chrome): Prefer signInWithRedirect for reliable mobile experience
+  if (env.isMobile) {
+    try {
+      sessionStorage.setItem('cardpulse_auth_redirect_pending', 'true');
+      await signInWithRedirect(auth, googleProvider);
+      return { user: null, redirectInitiated: true };
+    } catch (redirectErr: any) {
+      sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+      throw new Error(getAuthErrorMessage(redirectErr));
+    }
+  }
+
+  // Desktop browsers: Prefer signInWithPopup, with fallback to Redirect if popup is blocked
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    return result.user;
+    return { user: result.user };
   } catch (error: any) {
     if (
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request'
     ) {
-      return null;
+      return { user: null };
     }
+
+    // Popup was blocked on Desktop -> Automatic Fallback to signInWithRedirect
     if (error?.code === 'auth/popup-blocked') {
-      throw new Error('เบราว์เซอร์บล็อกหน้าต่าง Pop-up โปรดอนุญาต Pop-up แล้วลองใหม่อีกครั้ง');
+      try {
+        sessionStorage.setItem('cardpulse_auth_redirect_pending', 'true');
+        await signInWithRedirect(auth, googleProvider);
+        return { user: null, redirectInitiated: true };
+      } catch (redirectErr: any) {
+        sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+        throw new Error(getAuthErrorMessage(redirectErr));
+      }
     }
+
     console.error('Login error:', error);
-    throw error;
+    throw new Error(getAuthErrorMessage(error));
+  }
+};
+
+// Check for redirect result on app startup (Task 1)
+export const checkRedirectLoginResult = async (): Promise<User | null> => {
+  try {
+    const pending = sessionStorage.getItem('cardpulse_auth_redirect_pending');
+    const result = await getRedirectResult(auth);
+    if (pending) {
+      sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+    }
+    if (result && result.user) {
+      return result.user;
+    }
+    return null;
+  } catch (error: any) {
+    sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+    console.error('Redirect result error:', error);
+    throw new Error(getAuthErrorMessage(error));
   }
 };
 
 export const logoutUser = async (): Promise<void> => {
+  sessionStorage.removeItem('cardpulse_auth_redirect_pending');
   await signOut(auth);
 };
 
@@ -136,6 +260,9 @@ export interface UserPreferencesPayload {
   bgOpacity?: number;
   bgBlur?: number;
   bgPosition?: any;
+  isMigrated?: boolean;
+  migrationVersion?: number;
+  migratedAt?: any;
 }
 
 export const subscribeUserProfile = (
@@ -165,7 +292,6 @@ export const saveUserProfileToFirestore = async (
   const path = `users/${userId}`;
   try {
     const docRef = doc(db, 'users', userId);
-    // Sanitize undefined fields
     const sanitized: Record<string, any> = {
       userId,
       updatedAt: serverTimestamp(),
@@ -177,6 +303,8 @@ export const saveUserProfileToFirestore = async (
     if (data.bgOpacity !== undefined) sanitized.bgOpacity = data.bgOpacity;
     if (data.bgBlur !== undefined) sanitized.bgBlur = data.bgBlur;
     if (data.bgPosition !== undefined) sanitized.bgPosition = data.bgPosition;
+    if (data.isMigrated !== undefined) sanitized.isMigrated = data.isMigrated;
+    if (data.migrationVersion !== undefined) sanitized.migrationVersion = data.migrationVersion;
 
     await setDoc(docRef, sanitized, { merge: true });
   } catch (error) {
@@ -184,7 +312,7 @@ export const saveUserProfileToFirestore = async (
   }
 };
 
-// 6. Credit Cards Synchronization
+// 6. Credit Cards Synchronization with Order and Optimistic Concurrency
 export const subscribeUserCards = (
   userId: string,
   callback: (cards: CreditCard[]) => void
@@ -195,20 +323,29 @@ export const subscribeUserCards = (
     (snapshot) => {
       const cards: CreditCard[] = [];
       snapshot.forEach((d) => {
-        const item = d.data() as CreditCard;
+        const item = d.data() as any;
         cards.push({
           id: item.id || d.id,
           name: item.name,
           bank: item.bank,
-          last4: item.last4,
-          creditLimit: item.creditLimit,
-          billingCutoffDay: item.billingCutoffDay,
-          paymentDueDay: item.paymentDueDay,
-          colorGradient: item.colorGradient,
-          accentColor: item.accentColor,
+          last4: item.last4 || '',
+          creditLimit: item.creditLimit || 0,
+          billingCutoffDay: Number(item.billingCutoffDay),
+          paymentDueDay: Number(item.paymentDueDay),
+          colorGradient: item.colorGradient || '',
+          accentColor: item.accentColor || '',
           cardType: item.cardType,
-          status: item.status,
+          status: item.status || 'active',
+          orderIndex: item.orderIndex !== undefined ? Number(item.orderIndex) : undefined,
+          version: typeof item.version === 'number' ? item.version : 1,
+          updatedAt: item.updatedAt?.toDate ? item.updatedAt.toDate().toISOString() : item.updatedAt || undefined,
         });
+      });
+      // Sort by orderIndex so order is strictly maintained across devices
+      cards.sort((a, b) => {
+        const orderA = a.orderIndex !== undefined ? a.orderIndex : 9999;
+        const orderB = b.orderIndex !== undefined ? b.orderIndex : 9999;
+        return orderA - orderB;
       });
       callback(cards);
     },
@@ -218,26 +355,81 @@ export const subscribeUserCards = (
   );
 };
 
-export const saveUserCardToFirestore = async (userId: string, card: CreditCard) => {
+export const saveUserCardToFirestore = async (
+  userId: string,
+  card: CreditCard,
+  expectedVersion?: number
+): Promise<{ success: boolean; version: number }> => {
   const path = `users/${userId}/cards/${card.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'cards', card.id);
-    const payload: Record<string, any> = {
-      id: card.id,
-      userId,
-      name: card.name,
-      bank: card.bank,
-      last4: card.last4 || '',
-      creditLimit: card.creditLimit || 0,
-      billingCutoffDay: Number(card.billingCutoffDay),
-      paymentDueDay: Number(card.paymentDueDay),
-      colorGradient: card.colorGradient || '',
-      accentColor: card.accentColor || '',
-      status: card.status || 'active',
-      updatedAt: serverTimestamp(),
-    };
-    if (card.cardType) payload.cardType = card.cardType;
-    await setDoc(docRef, payload, { merge: true });
+    let newVersion = 1;
+
+    await runTransaction(db, async (txn) => {
+      const existingSnap = await txn.get(docRef);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data();
+        const currentVer = typeof existingData.version === 'number' ? existingData.version : 1;
+        // Optimistic concurrency check: If server version is greater than client's expected version
+        if (expectedVersion !== undefined && currentVer > expectedVersion) {
+          const conflictErr = new Error(`CONFLICT_DETECTED: Card "${card.name}" was modified by another session (v${currentVer} > v${expectedVersion})`);
+          (conflictErr as any).code = 'DATA_CONFLICT';
+          (conflictErr as any).serverData = existingData;
+          throw conflictErr;
+        }
+        newVersion = currentVer + 1;
+      } else {
+        newVersion = 1;
+      }
+
+      const payload: Record<string, any> = {
+        id: card.id,
+        userId,
+        name: card.name,
+        bank: card.bank,
+        last4: card.last4 || '',
+        creditLimit: card.creditLimit || 0,
+        billingCutoffDay: Number(card.billingCutoffDay),
+        paymentDueDay: Number(card.paymentDueDay),
+        colorGradient: card.colorGradient || '',
+        accentColor: card.accentColor || '',
+        status: card.status || 'active',
+        orderIndex: card.orderIndex !== undefined ? Number(card.orderIndex) : 0,
+        version: newVersion,
+        updatedAt: serverTimestamp(),
+      };
+      if (card.cardType) payload.cardType = card.cardType;
+      if (!existingSnap.exists()) {
+        payload.createdAt = serverTimestamp();
+      }
+
+      txn.set(docRef, payload, { merge: true });
+    });
+
+    return { success: true, version: newVersion };
+  } catch (error: any) {
+    if (error?.code === 'DATA_CONFLICT') {
+      throw error;
+    }
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+};
+
+export const saveCardOrderToFirestore = async (
+  userId: string,
+  cards: CreditCard[]
+) => {
+  const path = `users/${userId}/cards`;
+  try {
+    const batch = writeBatch(db);
+    cards.forEach((card, index) => {
+      const cardRef = doc(db, 'users', userId, 'cards', card.id);
+      batch.update(cardRef, {
+        orderIndex: index,
+        updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -252,7 +444,7 @@ export const deleteUserCardFromFirestore = async (userId: string, cardId: string
   }
 };
 
-// 7. Transactions Synchronization
+// 7. Transactions Synchronization with Optimistic Concurrency
 export const subscribeUserTransactions = (
   userId: string,
   callback: (transactions: Transaction[]) => void
@@ -283,7 +475,9 @@ export const subscribeUserTransactions = (
           tags: item.tags || [],
           isPaid: !!item.isPaid,
           paidDate: item.paidDate || undefined,
+          version: typeof item.version === 'number' ? item.version : 1,
           createdAt: item.createdAt?.toDate ? item.createdAt.toDate().toISOString() : item.createdAt || new Date().toISOString(),
+          updatedAt: item.updatedAt?.toDate ? item.updatedAt.toDate().toISOString() : item.updatedAt || undefined,
         });
       });
       callback(txs);
@@ -296,35 +490,65 @@ export const subscribeUserTransactions = (
 
 export const saveUserTransactionToFirestore = async (
   userId: string,
-  tx: Transaction
-) => {
+  tx: Transaction,
+  expectedVersion?: number
+): Promise<{ success: boolean; version: number }> => {
   const path = `users/${userId}/transactions/${tx.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'transactions', tx.id);
-    const payload: Record<string, any> = {
-      id: tx.id,
-      userId,
-      cardId: tx.cardId,
-      date: tx.date,
-      title: tx.title,
-      category: tx.category,
-      amount: Number(tx.amount),
-      billingCycleMonth: tx.billingCycleMonth,
-      isPaid: !!tx.isPaid,
-      updatedAt: serverTimestamp(),
-    };
+    let newVersion = 1;
 
-    if (tx.isInstallment !== undefined) payload.isInstallment = tx.isInstallment;
-    if (tx.totalInstallments !== undefined) payload.totalInstallments = Number(tx.totalInstallments);
-    if (tx.currentInstallment !== undefined) payload.currentInstallment = Number(tx.currentInstallment);
-    if (tx.monthlyInstallmentAmount !== undefined) payload.monthlyInstallmentAmount = Number(tx.monthlyInstallmentAmount);
-    if (tx.installmentGroupId) payload.installmentGroupId = tx.installmentGroupId;
-    if (tx.note) payload.note = tx.note;
-    if (tx.tags && Array.isArray(tx.tags)) payload.tags = tx.tags.slice(0, 10);
-    if (tx.paidDate) payload.paidDate = tx.paidDate;
+    await runTransaction(db, async (txn) => {
+      const existingSnap = await txn.get(docRef);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data();
+        const currentVer = typeof existingData.version === 'number' ? existingData.version : 1;
+        // Optimistic concurrency check
+        if (expectedVersion !== undefined && currentVer > expectedVersion) {
+          const conflictErr = new Error(`CONFLICT_DETECTED: Transaction "${tx.title}" was modified by another session (v${currentVer} > v${expectedVersion})`);
+          (conflictErr as any).code = 'DATA_CONFLICT';
+          (conflictErr as any).serverData = existingData;
+          throw conflictErr;
+        }
+        newVersion = currentVer + 1;
+      } else {
+        newVersion = 1;
+      }
 
-    await setDoc(docRef, payload, { merge: true });
-  } catch (error) {
+      const payload: Record<string, any> = {
+        id: tx.id,
+        userId,
+        cardId: tx.cardId,
+        date: tx.date,
+        title: tx.title,
+        category: tx.category,
+        amount: Number(tx.amount),
+        billingCycleMonth: tx.billingCycleMonth,
+        isPaid: !!tx.isPaid,
+        version: newVersion,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (tx.isInstallment !== undefined) payload.isInstallment = tx.isInstallment;
+      if (tx.totalInstallments !== undefined) payload.totalInstallments = Number(tx.totalInstallments);
+      if (tx.currentInstallment !== undefined) payload.currentInstallment = Number(tx.currentInstallment);
+      if (tx.monthlyInstallmentAmount !== undefined) payload.monthlyInstallmentAmount = Number(tx.monthlyInstallmentAmount);
+      if (tx.installmentGroupId) payload.installmentGroupId = tx.installmentGroupId;
+      if (tx.note) payload.note = tx.note;
+      if (tx.tags && Array.isArray(tx.tags)) payload.tags = tx.tags.slice(0, 10);
+      if (tx.paidDate) payload.paidDate = tx.paidDate;
+      if (!existingSnap.exists()) {
+        payload.createdAt = serverTimestamp();
+      }
+
+      txn.set(docRef, payload, { merge: true });
+    });
+
+    return { success: true, version: newVersion };
+  } catch (error: any) {
+    if (error?.code === 'DATA_CONFLICT') {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 };
@@ -341,40 +565,72 @@ export const deleteUserTransactionFromFirestore = async (
   }
 };
 
-// Batch seed or sync local data to Firebase upon first login
-export const syncInitialDataToCloud = async (
-  userId: string,
-  cards: CreditCard[],
-  transactions: Transaction[]
-) => {
-  const path = `users/${userId}`;
-  try {
-    // Write user doc
-    await setDoc(
-      doc(db, 'users', userId),
-      {
-        userId,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+// 8. Robust Initial Migration conforming to Task 1 & Task 3
+export interface MigrationResult {
+  status: 'already_migrated' | 'migrated_real_data' | 'initialized_empty';
+  cloudCardCount: number;
+  cloudTxCount: number;
+}
 
-    // Write cards in batches (max 500 ops)
+export const checkAndMigrateUserData = async (
+  userId: string,
+  localCards: CreditCard[],
+  localTransactions: Transaction[],
+  localPreferences: Partial<UserPreferencesPayload>,
+  hasRealLocalData: boolean
+): Promise<MigrationResult> => {
+  const userRef = doc(db, 'users', userId);
+  const cardsCol = collection(db, 'users', userId, 'cards');
+  const txsCol = collection(db, 'users', userId, 'transactions');
+
+  // 1. Fetch current status from Cloud
+  const [userSnap, cardsSnap, txsSnap] = await Promise.all([
+    getDoc(userRef),
+    getDocs(cardsCol),
+    getDocs(txsCol),
+  ]);
+
+  const isCloudMigrated = userSnap.exists() && userSnap.data()?.isMigrated === true;
+  const hasCloudCards = !cardsSnap.empty;
+  const hasCloudTxs = !txsSnap.empty;
+
+  // If Cloud is already migrated or already has data, Cloud is authoritative
+  if (isCloudMigrated || hasCloudCards || hasCloudTxs) {
+    if (!isCloudMigrated) {
+      await setDoc(
+        userRef,
+        { userId, isMigrated: true, migrationVersion: 1, migratedAt: serverTimestamp() },
+        { merge: true }
+      );
+    }
+    return {
+      status: 'already_migrated',
+      cloudCardCount: cardsSnap.size,
+      cloudTxCount: txsSnap.size,
+    };
+  }
+
+  // 2. Cloud is empty and not migrated yet
+  if (hasRealLocalData && localCards.length > 0) {
+    // Write cards batch
     const cardBatch = writeBatch(db);
-    cards.forEach((card) => {
-      const cRef = doc(db, 'users', userId, 'cards', card.id);
+    localCards.forEach((c, idx) => {
+      const cRef = doc(db, 'users', userId, 'cards', c.id);
       cardBatch.set(cRef, {
-        id: card.id,
+        id: c.id,
         userId,
-        name: card.name,
-        bank: card.bank,
-        last4: card.last4 || '',
-        creditLimit: card.creditLimit || 0,
-        billingCutoffDay: Number(card.billingCutoffDay),
-        paymentDueDay: Number(card.paymentDueDay),
-        colorGradient: card.colorGradient || '',
-        accentColor: card.accentColor || '',
-        status: card.status || 'active',
+        name: c.name,
+        bank: c.bank,
+        last4: c.last4 || '',
+        creditLimit: c.creditLimit || 0,
+        billingCutoffDay: Number(c.billingCutoffDay),
+        paymentDueDay: Number(c.paymentDueDay),
+        colorGradient: c.colorGradient || '',
+        accentColor: c.accentColor || '',
+        status: c.status || 'active',
+        orderIndex: c.orderIndex !== undefined ? c.orderIndex : idx,
+        version: 1,
+        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     });
@@ -382,37 +638,149 @@ export const syncInitialDataToCloud = async (
 
     // Write transactions in batches
     const chunkSize = 400;
-    for (let i = 0; i < transactions.length; i += chunkSize) {
-      const chunk = transactions.slice(i, i + chunkSize);
+    for (let i = 0; i < localTransactions.length; i += chunkSize) {
+      const chunk = localTransactions.slice(i, i + chunkSize);
       const txBatch = writeBatch(db);
-      chunk.forEach((tx) => {
-        const tRef = doc(db, 'users', userId, 'transactions', tx.id);
+      chunk.forEach((t) => {
+        const tRef = doc(db, 'users', userId, 'transactions', t.id);
         const payload: Record<string, any> = {
-          id: tx.id,
+          id: t.id,
           userId,
-          cardId: tx.cardId,
-          date: tx.date,
-          title: tx.title,
-          category: tx.category,
-          amount: Number(tx.amount),
-          billingCycleMonth: tx.billingCycleMonth,
-          isPaid: !!tx.isPaid,
+          cardId: t.cardId,
+          date: t.date,
+          title: t.title,
+          category: t.category,
+          amount: Number(t.amount),
+          billingCycleMonth: t.billingCycleMonth,
+          isPaid: !!t.isPaid,
+          version: 1,
+          createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
-        if (tx.isInstallment !== undefined) payload.isInstallment = tx.isInstallment;
-        if (tx.totalInstallments !== undefined) payload.totalInstallments = Number(tx.totalInstallments);
-        if (tx.currentInstallment !== undefined) payload.currentInstallment = Number(tx.currentInstallment);
-        if (tx.monthlyInstallmentAmount !== undefined) payload.monthlyInstallmentAmount = Number(tx.monthlyInstallmentAmount);
-        if (tx.installmentGroupId) payload.installmentGroupId = tx.installmentGroupId;
-        if (tx.note) payload.note = tx.note;
-        if (tx.tags && Array.isArray(tx.tags)) payload.tags = tx.tags.slice(0, 10);
-        if (tx.paidDate) payload.paidDate = tx.paidDate;
+        if (t.isInstallment !== undefined) payload.isInstallment = t.isInstallment;
+        if (t.totalInstallments !== undefined) payload.totalInstallments = Number(t.totalInstallments);
+        if (t.currentInstallment !== undefined) payload.currentInstallment = Number(t.currentInstallment);
+        if (t.monthlyInstallmentAmount !== undefined) payload.monthlyInstallmentAmount = Number(t.monthlyInstallmentAmount);
+        if (t.installmentGroupId) payload.installmentGroupId = t.installmentGroupId;
+        if (t.note) payload.note = t.note;
+        if (t.tags && Array.isArray(t.tags)) payload.tags = t.tags.slice(0, 10);
+        if (t.paidDate) payload.paidDate = t.paidDate;
 
         txBatch.set(tRef, payload, { merge: true });
       });
       await txBatch.commit();
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+
+    // Set User Document with isMigrated = true ONLY AFTER all subcollections successfully commit
+    await setDoc(
+      userRef,
+      {
+        userId,
+        isMigrated: true,
+        migrationVersion: 1,
+        migratedAt: serverTimestamp(),
+        brandName: localPreferences.brandName || 'CardPulse',
+        brandLogo: localPreferences.brandLogo || null,
+        brandTagline: localPreferences.brandTagline || 'ระบบติดตามและจัดการค่าบัตรเครดิต',
+        bgImage: localPreferences.bgImage || null,
+        bgOpacity: localPreferences.bgOpacity !== undefined ? localPreferences.bgOpacity : 0.7,
+        bgBlur: localPreferences.bgBlur !== undefined ? localPreferences.bgBlur : 4,
+        bgPosition: localPreferences.bgPosition || null,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return {
+      status: 'migrated_real_data',
+      cloudCardCount: localCards.length,
+      cloudTxCount: localTransactions.length,
+    };
+  } else {
+    // Local has only default demo data or empty -> Do NOT push demo data to cloud!
+    // Initialize cloud with empty collections and mark isMigrated: true
+    await setDoc(
+      userRef,
+      {
+        userId,
+        isMigrated: true,
+        migrationVersion: 1,
+        migratedAt: serverTimestamp(),
+        brandName: localPreferences.brandName || 'CardPulse',
+        brandLogo: localPreferences.brandLogo || null,
+        brandTagline: localPreferences.brandTagline || 'ระบบติดตามและจัดการค่าบัตรเครดิต',
+        bgImage: localPreferences.bgImage || null,
+        bgOpacity: localPreferences.bgOpacity !== undefined ? localPreferences.bgOpacity : 0.7,
+        bgBlur: localPreferences.bgBlur !== undefined ? localPreferences.bgBlur : 4,
+        bgPosition: localPreferences.bgPosition || null,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return {
+      status: 'initialized_empty',
+      cloudCardCount: 0,
+      cloudTxCount: 0,
+    };
   }
 };
+
+/**
+ * Production Clean Start:
+ * Safely purges only the specified user's cards and transactions from Cloud Firestore
+ * and resets their preferences to clean defaults.
+ */
+export const cleanStartUserCloudData = async (
+  userId: string
+): Promise<{ deletedCards: number; deletedTxs: number }> => {
+  const cardsCol = collection(db, 'users', userId, 'cards');
+  const txsCol = collection(db, 'users', userId, 'transactions');
+  const userRef = doc(db, 'users', userId);
+
+  const [cardsSnap, txsSnap] = await Promise.all([
+    getDocs(cardsCol),
+    getDocs(txsCol),
+  ]);
+
+  // Batch delete cards in chunks of 400
+  const cardBatches: Promise<void>[] = [];
+  const cardDocs = cardsSnap.docs;
+  for (let i = 0; i < cardDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    cardDocs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    cardBatches.push(batch.commit());
+  }
+  await Promise.all(cardBatches);
+
+  // Batch delete transactions in chunks of 400
+  const txBatches: Promise<void>[] = [];
+  const txDocs = txsSnap.docs;
+  for (let i = 0; i < txDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    txDocs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    txBatches.push(batch.commit());
+  }
+  await Promise.all(txBatches);
+
+  // Reset user document to clean production defaults
+  await setDoc(userRef, {
+    userId,
+    isMigrated: true,
+    migrationVersion: 1,
+    migratedAt: serverTimestamp(),
+    brandName: 'CardPulse',
+    brandTagline: 'ระบบติดตามและจัดการค่าบัตรเครดิต',
+    brandLogo: null,
+    bgImage: null,
+    bgOpacity: 0.7,
+    bgBlur: 4,
+    bgPosition: null,
+    updatedAt: serverTimestamp(),
+  });
+
+  return { deletedCards: cardDocs.length, deletedTxs: txDocs.length };
+};
+

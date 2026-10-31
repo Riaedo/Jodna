@@ -12,6 +12,8 @@ import {
   Eye,
 } from 'lucide-react';
 
+import { compressBrandLogo } from '../utils/imageCompressor';
+
 interface BrandCustomizationModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -35,6 +37,8 @@ export const BrandCustomizationModal: React.FC<BrandCustomizationModalProps> = (
   const [name, setName] = useState<string>(brandName || DEFAULT_BRAND_NAME);
   const [tagline, setTagline] = useState<string>(brandTagline || DEFAULT_BRAND_TAGLINE);
   const [logo, setLogo] = useState<string | null>(brandLogo);
+  const [isCompressing, setIsCompressing] = useState<boolean>(false);
+  const [logoSizeInfo, setLogoSizeInfo] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -46,69 +50,39 @@ export const BrandCustomizationModal: React.FC<BrandCustomizationModalProps> = (
       setTagline(brandTagline || DEFAULT_BRAND_TAGLINE);
       setLogo(brandLogo);
       setErrorMsg(null);
+      setIsCompressing(false);
+      setLogoSizeInfo(null);
     }
   }, [isOpen, brandName, brandLogo, brandTagline]);
 
   if (!isOpen) return null;
 
-  // Handle Logo File Upload
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle Logo File Upload (Task 5: Compressed to <= 150KB)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setErrorMsg(null);
+    setLogoSizeInfo(null);
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate type
-    if (!file.type.startsWith('image/')) {
-      setErrorMsg('กรุณาเลือกไฟล์รูปภาพที่ถูกต้อง (PNG, JPG, SVG, WebP)');
+    // Validate type (JPEG, PNG, WebP)
+    if (!file.type.match(/^image\/(png|jpeg|jpg|webp)$/i)) {
+      setErrorMsg('กรุณาเลือกไฟล์รูปภาพที่รองรับ (PNG, JPEG, WebP)');
       return;
     }
 
-    // Validate size (max 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      setErrorMsg('ขนาดไฟล์รูปภาพต้องไม่เกิน 5MB');
-      return;
+    try {
+      setIsCompressing(true);
+      const result = await compressBrandLogo(file);
+      const kb = Math.round(result.sizeBytes / 1024);
+      setLogo(result.dataUrl);
+      setLogoSizeInfo(`บีบอัดรูปภาพแล้ว (${kb}KB จากขีดจำกัด 150KB)`);
+    } catch (err: any) {
+      console.error('Logo compression error:', err);
+      setErrorMsg(err.message || 'เกิดข้อผิดพลาดในการบีบอัดรูปภาพ');
+    } finally {
+      setIsCompressing(false);
+      if (e.target) e.target.value = '';
     }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      if (!dataUrl) return;
-
-      // Optimize image if it's a huge raster photo
-      const img = new Image();
-      img.onload = () => {
-        const maxDim = 320;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, width, height);
-            const optimized = canvas.toDataURL('image/png', 0.95);
-            setLogo(optimized);
-            return;
-          }
-        }
-        setLogo(dataUrl);
-      };
-      img.onerror = () => {
-        setErrorMsg('ไม่สามารถประมวลผลรูปภาพนี้ได้');
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
   };
 
   const handleResetToDefault = () => {
@@ -263,14 +237,31 @@ export const BrandCustomizationModal: React.FC<BrandCustomizationModalProps> = (
                 />
                 <button
                   type="button"
+                  disabled={isCompressing}
                   onClick={() => fileInputRef.current?.click()}
-                  className="w-full py-3 px-4 rounded-xl border border-dashed border-indigo-500/50 hover:border-indigo-400 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-200 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+                  className={`w-full py-3 px-4 rounded-xl border border-dashed text-xs font-semibold flex items-center justify-center gap-2 transition ${
+                    isCompressing
+                      ? 'border-indigo-400 bg-indigo-600/20 text-indigo-300 cursor-wait'
+                      : 'border-indigo-500/50 hover:border-indigo-400 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-200 cursor-pointer'
+                  }`}
                 >
                   <Upload className="w-4 h-4 text-indigo-400" />
-                  <span>{logo ? 'เปลี่ยนรูปภาพโลโก้ใหม่' : 'อัปโหลดรูปภาพโลโก้'}</span>
+                  <span>
+                    {isCompressing
+                      ? 'กำลังบีบอัดรูปภาพให้ไม่เกิน 150KB...'
+                      : logo
+                      ? 'เปลี่ยนรูปภาพโลโก้ใหม่'
+                      : 'อัปโหลดรูปภาพโลโก้'}
+                  </span>
                 </button>
+                {logoSizeInfo && (
+                  <p className="text-[11px] text-emerald-400 font-medium flex items-center gap-1">
+                    <Check className="w-3 h-3" />
+                    <span>{logoSizeInfo}</span>
+                  </p>
+                )}
                 <p className="text-[10px] text-slate-400 text-center sm:text-left">
-                  แนะนำภาพทรงสี่เหลี่ยมจัตุรัส (Square) หรือโลโก้พื้นหลังโปร่งใส (PNG, SVG, WebP) ขนาดไม่เกิน 5MB
+                  ระบบจะบีบอัดภาพให้อัตโนมัติ (ไม่เกิน 150KB) รองรับ PNG, JPEG, WebP
                 </p>
               </div>
             </div>

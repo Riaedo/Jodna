@@ -13,10 +13,25 @@ import {
   Sparkles,
   Edit2,
   FileText,
+  Trash2,
 } from 'lucide-react';
 
 import { User } from 'firebase/auth';
-import { Cloud, CloudCheck, LogIn, LogOut, Loader2 } from 'lucide-react';
+import {
+  Cloud,
+  CloudCheck,
+  LogIn,
+  LogOut,
+  Loader2,
+  Wifi,
+  WifiOff,
+  AlertTriangle,
+  AlertCircle,
+  Clock,
+  RefreshCw,
+} from 'lucide-react';
+
+export type SyncState = 'synced' | 'syncing' | 'pending' | 'failed' | 'conflict';
 
 interface HeaderProps {
   brandName?: string;
@@ -35,6 +50,14 @@ interface HeaderProps {
   onLogin?: () => void;
   onLogout?: () => void;
   isSyncing?: boolean;
+  isAuthLoading?: boolean;
+  isOnline?: boolean;
+  syncState?: SyncState;
+  pendingCount?: number;
+  conflictCount?: number;
+  onTriggerSync?: () => void;
+  onOpenConflictModal?: () => void;
+  onCleanStart?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -54,6 +77,14 @@ export const Header: React.FC<HeaderProps> = ({
   onLogin,
   onLogout,
   isSyncing,
+  isAuthLoading = false,
+  isOnline = true,
+  syncState = 'synced',
+  pendingCount = 0,
+  conflictCount = 0,
+  onTriggerSync,
+  onOpenConflictModal,
+  onCleanStart,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -152,7 +183,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </div>
 
-          {/* Right Action Controls: Quick Add Expense Button + Hamburger Menu ONLY */}
+          {/* Right Action Controls: Quick Add Expense Button + Sync Status + Hamburger Menu */}
           <div className="flex items-center gap-2" ref={menuRef}>
             {/* Quick Add Expense Button (Reduced by 60% in size) */}
             <button
@@ -164,6 +195,63 @@ export const Header: React.FC<HeaderProps> = ({
               <Plus className="w-3.5 h-3.5" />
               <span>บันทึกรายจ่าย</span>
             </button>
+
+            {/* Task 6: Network & Sync Status Badge in Header Bar */}
+            {!isOnline ? (
+              <div
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-semibold shrink-0"
+                title="กำลังทำงานในโหมดออฟไลน์ ข้อมูลจะถูกบันทึกลงเครื่องและซิงก์เมื่อออนไลน์"
+              >
+                <WifiOff className="w-3 h-3 text-amber-400 shrink-0" />
+                <span className="hidden xs:inline">ออฟไลน์</span>
+              </div>
+            ) : conflictCount > 0 ? (
+              <button
+                type="button"
+                onClick={onOpenConflictModal}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[11px] font-bold animate-pulse cursor-pointer shrink-0"
+                title="ตรวจพบข้อมูลขัดแย้ง คลิกเพื่อตรวจสอบและเลือกเวอร์ชัน"
+              >
+                <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                <span>ขัดแย้ง ({conflictCount})</span>
+              </button>
+            ) : pendingCount > 0 ? (
+              <button
+                type="button"
+                onClick={onTriggerSync}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-300 text-[11px] font-semibold hover:bg-amber-500/25 transition cursor-pointer shrink-0"
+                title="มีข้อมูลรอซิงก์ คลิกเพื่อส่งข้อมูลขึ้นคลาวด์ทันที"
+              >
+                <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+                <span>รอซิงก์ ({pendingCount})</span>
+              </button>
+            ) : syncState === 'syncing' || isSyncing ? (
+              <div
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[11px] font-medium shrink-0"
+                title="กำลังซิงก์ข้อมูลกับ Firestore..."
+              >
+                <Loader2 className="w-3 h-3 text-indigo-400 animate-spin shrink-0" />
+                <span className="hidden xs:inline">กำลังซิงก์...</span>
+              </div>
+            ) : syncState === 'failed' ? (
+              <button
+                type="button"
+                onClick={onTriggerSync}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-[11px] font-medium hover:bg-rose-500/25 transition cursor-pointer shrink-0"
+                title="ซิงก์ไม่สำเร็จ คลิกเพื่อลองใหม่"
+              >
+                <AlertCircle className="w-3 h-3 text-rose-400 shrink-0" />
+                <span className="hidden xs:inline">ซิงก์ไม่สำเร็จ</span>
+              </button>
+            ) : currentUser && syncState === 'synced' && pendingCount === 0 ? (
+              <div
+                className="hidden md:flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] font-medium shrink-0"
+                title="ข้อมูลทั้งหมดตรงกับ Firestore แล้ว"
+              >
+                <CloudCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>ซิงก์แล้ว</span>
+              </div>
+            ) : null}
 
             {/* Hamburger Button (Export and settings reside ONLY here as requested) */}
             <div className="relative">
@@ -251,30 +339,127 @@ export const Header: React.FC<HeaderProps> = ({
                     </div>
 
                     {currentUser ? (
-                      <div className="pt-1 flex items-center justify-end">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            onLogout && onLogout();
-                          }}
-                          className="flex items-center gap-1 text-[11px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
-                        >
-                          <LogOut className="w-3 h-3" />
-                          <span>ออกจากระบบ</span>
-                        </button>
+                      <div className="pt-2 space-y-2 border-t border-indigo-500/20">
+                        {/* Task 6 Detailed Sync State Banner inside dropdown */}
+                        <div className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/60 space-y-1.5 text-[11px]">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400">สถานะเครือข่าย:</span>
+                            <span className="flex items-center gap-1 font-semibold">
+                              {isOnline ? (
+                                <>
+                                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                                  <span className="text-emerald-400">ออนไลน์ (Online)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                                  <span className="text-amber-400">ออฟไลน์ (Offline)</span>
+                                </>
+                              )}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400">สถานะข้อมูล:</span>
+                            <span className="font-semibold">
+                              {conflictCount > 0 ? (
+                                <span className="text-rose-400 flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  พบข้อมูลขัดแย้ง ({conflictCount})
+                                </span>
+                              ) : pendingCount > 0 ? (
+                                <span className="text-amber-300 flex items-center gap-1">
+                                  <Clock className="w-3 h-3" />
+                                  รอซิงก์ {pendingCount} รายการ
+                                </span>
+                              ) : syncState === 'syncing' || isSyncing ? (
+                                <span className="text-indigo-400 flex items-center gap-1">
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  กำลังซิงก์...
+                                </span>
+                              ) : syncState === 'failed' ? (
+                                <span className="text-rose-400 flex items-center gap-1">
+                                  <AlertCircle className="w-3 h-3" />
+                                  ซิงก์ไม่สำเร็จ
+                                </span>
+                              ) : (
+                                <span className="text-emerald-400 flex items-center gap-1">
+                                  <CloudCheck className="w-3 h-3" />
+                                  ตรงกับคลาวด์แล้ว
+                                </span>
+                              )}
+                            </span>
+                          </div>
+
+                          {/* Action Button for Pending or Conflict */}
+                          {conflictCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsMenuOpen(false);
+                                onOpenConflictModal && onOpenConflictModal();
+                              }}
+                              className="w-full mt-1 py-1 px-2.5 rounded bg-rose-600/30 hover:bg-rose-600/50 border border-rose-500/40 text-rose-200 text-[10px] font-bold flex items-center justify-center gap-1 transition cursor-pointer"
+                            >
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>ตรวจสอบและเลือกเวอร์ชันที่ขัดแย้ง</span>
+                            </button>
+                          )}
+
+                          {pendingCount > 0 && isOnline && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onTriggerSync && onTriggerSync();
+                              }}
+                              className="w-full mt-1 py-1 px-2.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-semibold flex items-center justify-center gap-1 transition cursor-pointer"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                              <span>ซิงก์ข้อมูลที่ค้างอยู่ตอนนี้ ({pendingCount} รายการ)</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsMenuOpen(false);
+                              onLogout && onLogout();
+                            }}
+                            className="flex items-center gap-1 text-[11px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                          >
+                            <LogOut className="w-3 h-3" />
+                            <span>ออกจากระบบ</span>
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <button
                         type="button"
+                        disabled={isAuthLoading}
                         onClick={() => {
+                          if (isAuthLoading) return;
                           setIsMenuOpen(false);
                           onLogin && onLogin();
                         }}
-                        className="w-full mt-1 py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-sm cursor-pointer"
+                        className={`w-full mt-1 py-1.5 px-3 rounded-lg text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-sm ${
+                          isAuthLoading
+                            ? 'bg-indigo-700/60 text-slate-300 cursor-not-allowed'
+                            : 'bg-indigo-600 hover:bg-indigo-500 cursor-pointer active:scale-98'
+                        }`}
                       >
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>เข้าสู่ระบบ Google เพื่อเชื่อมต่อ Cloud</span>
+                        {isAuthLoading ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                            <span>กำลังเข้าสู่ระบบ Google...</span>
+                          </>
+                        ) : (
+                          <>
+                            <LogIn className="w-3.5 h-3.5" />
+                            <span>เข้าสู่ระบบ Google เพื่อเชื่อมต่อ Cloud</span>
+                          </>
+                        )}
                       </button>
                     )}
                   </div>
@@ -392,6 +577,35 @@ export const Header: React.FC<HeaderProps> = ({
                       <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-300 shrink-0" />
                     </button>
                   </div>
+
+                  {/* 5. Clean Production Start Item */}
+                  {onCleanStart && (
+                    <div className="pt-1.5 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onCleanStart();
+                        }}
+                        className="w-full flex items-center justify-between p-2.5 rounded-xl bg-rose-950/20 hover:bg-rose-950/40 border border-rose-500/20 hover:border-rose-500/40 transition text-left cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="p-2 rounded-lg bg-rose-500/10 text-rose-400 group-hover:scale-105 transition shrink-0">
+                            <Trash2 className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-xs font-semibold text-rose-300 block group-hover:text-rose-200 transition">
+                              เริ่มต้นใช้งานจริง (Clean Start)
+                            </span>
+                            <span className="text-[10px] text-slate-400 block truncate">
+                              ล้างข้อมูลตัวอย่าง/บัตรเดิมทั้งหมด เพื่อเริ่มนับหนึ่งใหม่
+                            </span>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-rose-400 shrink-0" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

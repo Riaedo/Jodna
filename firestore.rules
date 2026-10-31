@@ -38,6 +38,9 @@ service cloud.firestore {
         && (!('bgOpacity' in data) || (data.bgOpacity is number && data.bgOpacity >= 0 && data.bgOpacity <= 1))
         && (!('bgBlur' in data) || (data.bgBlur is number && data.bgBlur >= 0 && data.bgBlur <= 50))
         && (!('bgPosition' in data) || data.bgPosition is map)
+        && (!('isMigrated' in data) || data.isMigrated is bool)
+        && (!('migrationVersion' in data) || (data.migrationVersion is int && data.migrationVersion >= 1))
+        && (!('migratedAt' in data) || data.migratedAt is timestamp)
         && (!('createdAt' in data) || data.createdAt is timestamp)
         && (!('updatedAt' in data) || data.updatedAt is timestamp);
     }
@@ -55,6 +58,8 @@ service cloud.firestore {
         && (!('accentColor' in data) || (data.accentColor is string && data.accentColor.size() <= 50))
         && (!('cardType' in data) || (data.cardType is string && data.cardType.size() <= 50))
         && (!('status' in data) || (data.status in ['active', 'inactive']))
+        && (!('orderIndex' in data) || (data.orderIndex is int && data.orderIndex >= 0))
+        && (!('version' in data) || (data.version is int && data.version >= 1))
         && (!('createdAt' in data) || data.createdAt is timestamp)
         && (!('updatedAt' in data) || data.updatedAt is timestamp);
     }
@@ -77,6 +82,7 @@ service cloud.firestore {
         && (!('tags' in data) || (data.tags is list && data.tags.size() <= 10))
         && (!('isPaid' in data) || data.isPaid is bool)
         && (!('paidDate' in data) || (data.paidDate is string && data.paidDate.size() <= 20))
+        && (!('version' in data) || (data.version is int && data.version >= 1))
         && (!('createdAt' in data) || data.createdAt is timestamp)
         && (!('updatedAt' in data) || data.updatedAt is timestamp);
     }

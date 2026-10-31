@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Bell,
+  CreditCard as CardIcon,
 } from 'lucide-react';
 import { ReorderCardsModal } from './ReorderCardsModal';
 
@@ -98,8 +99,27 @@ export const CardSlider: React.FC<CardSliderProps> = ({
         </div>
       </div>
 
-      {/* Cards Grid: Width unchanged, Height reduced by ~20% */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+      {/* Cards Grid or Empty State */}
+      {cards.length === 0 ? (
+        <div className="p-8 sm:p-12 text-center rounded-2xl bg-slate-900/40 border border-dashed border-slate-700/80">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-3 text-indigo-400">
+            <CardIcon className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-white tracking-tight">ยังไม่มีบัตรเครดิตในระบบ</h3>
+          <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto leading-relaxed">
+            เริ่มต้นใช้งาน CardPulse โดยการเพิ่มบัตรเครดิตใบแรกของคุณ เพื่อติดตามวันตัดรอบบิล วันครบกำหนดชำระ และคำนวณยอดใช้จ่ายอัตโนมัติ
+          </p>
+          <button
+            type="button"
+            onClick={onOpenAddCard}
+            className="mt-4 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition cursor-pointer inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" />
+            <span>เพิ่มบัตรเครดิตใบแรก</span>
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
         {cards.map((card, idx) => {
           const status = dueStatuses.find((s) => s.card.id === card.id);
           const cutoffAlert = calculateCardCutoffAlertStatus(card);
@@ -322,7 +342,8 @@ export const CardSlider: React.FC<CardSliderProps> = ({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
 
       {/* Card Reordering Modal */}
       {onReorderCards && (

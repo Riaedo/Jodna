@@ -37,22 +37,37 @@ import { InstallmentPlansModal } from './components/InstallmentPlansModal';
 import { BackgroundModal, BackgroundPosition } from './components/BackgroundModal';
 import { ExportCsvModal } from './components/ExportCsvModal';
 import { BrandCustomizationModal } from './components/BrandCustomizationModal';
-import { CreditCard as CardIcon, BarChart3 } from 'lucide-react';
+import { ConflictModal } from './components/ConflictModal';
+import { CreditCard as CardIcon, BarChart3, ExternalLink, Copy, Check } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
   subscribeAuth,
   loginWithGoogle,
   logoutUser,
+  checkRedirectLoginResult,
+  detectBrowserEnv,
   subscribeUserCards,
   saveUserCardToFirestore,
+  saveCardOrderToFirestore,
   deleteUserCardFromFirestore,
   subscribeUserTransactions,
   saveUserTransactionToFirestore,
   deleteUserTransactionFromFirestore,
   subscribeUserProfile,
   saveUserProfileToFirestore,
-  syncInitialDataToCloud,
+  checkAndMigrateUserData,
+  cleanStartUserCloudData,
 } from './services/firebase';
+import {
+  enqueueOperation,
+  processSyncQueue,
+  subscribeSyncQueue,
+  resolveConflict,
+  clearSyncQueue,
+  SyncOperation,
+  SyncStats,
+} from './services/syncQueue';
+import { SyncState } from './components/Header';
 
 const STORAGE_KEY_CARDS = 'cardpulse_cards_v1';
 const STORAGE_KEY_TXS = 'cardpulse_transactions_v1';
@@ -63,32 +78,46 @@ const STORAGE_KEY_BG_POSITION = 'cardpulse_bg_position_v1';
 const STORAGE_KEY_BRAND_NAME = 'cardpulse_brand_name_v1';
 const STORAGE_KEY_BRAND_LOGO = 'cardpulse_brand_logo_v1';
 const STORAGE_KEY_BRAND_TAGLINE = 'cardpulse_brand_tagline_v1';
+const STORAGE_KEY_PRODUCTION_CLEAN = 'cardpulse_production_clean_v2';
+
+// Production Clean Start: One-time purge of demo sample data from LocalStorage
+if (typeof window !== 'undefined') {
+  try {
+    if (!localStorage.getItem(STORAGE_KEY_PRODUCTION_CLEAN)) {
+      localStorage.removeItem(STORAGE_KEY_CARDS);
+      localStorage.removeItem(STORAGE_KEY_TXS);
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('cardpulse_sync_queue_') || k.startsWith('cardpulse_sync_lock_'))) {
+          localStorage.removeItem(k);
+        }
+      }
+      localStorage.setItem(STORAGE_KEY_PRODUCTION_CLEAN, 'true');
+    }
+  } catch {}
+}
 
 export default function App() {
-  // App data state
+  // App data state: Clean production start with empty arrays
   const [cards, setCards] = useState<CreditCard[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_CARDS);
-      return saved ? JSON.parse(saved) : INITIAL_DEMO_CARDS;
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
-      return INITIAL_DEMO_CARDS;
+      return [];
     }
   });
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_TXS);
-      if (!saved) return INITIAL_DEMO_TRANSACTIONS;
-      const parsed: Transaction[] = JSON.parse(saved);
-      // Ensure 2025 demo transactions are present so YoY comparison chart is populated
-      const has2025 = parsed.some((t) => t.billingCycleMonth?.startsWith('2025') || t.date?.startsWith('2025'));
-      if (!has2025) {
-        const demo2025 = INITIAL_DEMO_TRANSACTIONS.filter((t) => t.billingCycleMonth?.startsWith('2025'));
-        return [...parsed, ...demo2025];
-      }
-      return parsed;
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
-      return INITIAL_DEMO_TRANSACTIONS;
+      return [];
     }
   });
 
@@ -173,6 +202,77 @@ export default function App() {
   // Firebase Auth and Cloud Sync state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
+  const [inAppNotice, setInAppNotice] = useState<{ isOpen: boolean; appName?: string } | null>(null);
+  const [isCloudDataReady, setIsCloudDataReady] = useState<boolean>(false);
+
+  // Phase 3: Offline & Network Detection state (Task 4 & Task 6)
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [syncStats, setSyncStats] = useState<SyncStats>({
+    pendingCount: 0,
+    conflictCount: 0,
+    failedCount: 0,
+    isProcessing: false,
+  });
+  const [conflicts, setConflicts] = useState<SyncOperation[]>([]);
+  const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
+
+  // Task 6: Compute discrete sync state
+  const syncState = useMemo<SyncState>(() => {
+    if (!isOnline) return 'pending';
+    if (syncStats.isProcessing || isSyncing) return 'syncing';
+    if (syncStats.conflictCount > 0) return 'conflict';
+    if (syncStats.failedCount > 0) return 'failed';
+    if (syncStats.pendingCount > 0) return 'pending';
+    // Must never show synced before cloud confirms (Task 1 & Task 6)
+    if (currentUser && isCloudDataReady) return 'synced';
+    return 'pending';
+  }, [isOnline, syncStats, isSyncing, currentUser, isCloudDataReady]);
+
+  // Helper: Detect whether local state contains customized user data or untouched demo data
+  const checkIfRealUserData = useCallback(
+    (currentCards: CreditCard[], currentTxs: Transaction[]): boolean => {
+      // If system is empty, it is a clean production slate, not custom data to migrate
+      if (currentCards.length === 0 && currentTxs.length === 0) {
+        return false;
+      }
+
+      const demoCardIds = new Set(['card-1', 'card-2', 'card-3']);
+      const hasCustomCards = currentCards.some((c) => !demoCardIds.has(c.id));
+      if (hasCustomCards || currentCards.length !== INITIAL_DEMO_CARDS.length) {
+        return true;
+      }
+
+      // Check if demo card attributes were customized
+      const isCardModified = currentCards.some((c) => {
+        const initial = INITIAL_DEMO_CARDS.find((d) => d.id === c.id);
+        if (!initial) return true;
+        return (
+          c.name !== initial.name ||
+          c.last4 !== initial.last4 ||
+          c.creditLimit !== initial.creditLimit ||
+          c.billingCutoffDay !== initial.billingCutoffDay ||
+          c.paymentDueDay !== initial.paymentDueDay
+        );
+      });
+      if (isCardModified) return true;
+
+      // Check if transactions are custom (not part of initial demo transactions)
+      const hasCustomTxs = currentTxs.some(
+        (t) =>
+          !t.id.startsWith('tx-1') &&
+          !t.id.startsWith('tx-2') &&
+          !t.id.startsWith('tx-3') &&
+          !t.id.startsWith('tx-2025')
+      );
+      if (hasCustomTxs) return true;
+
+      return false;
+    },
+    []
+  );
 
   // Subscribe to Firebase Auth changes
   useEffect(() => {
@@ -182,86 +282,290 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Sync with Firestore when user is authenticated
+  // Check for Google OAuth Redirect Result on mount (Task 1)
   useEffect(() => {
-    if (!currentUser) return;
-    setIsSyncing(true);
-
-    let isInitialLoad = true;
-
-    // 1. Subscribe to Cards collection
-    const unsubCards = subscribeUserCards(currentUser.uid, (cloudCards) => {
-      if (cloudCards.length > 0) {
-        setCards(cloudCards);
-      } else if (isInitialLoad && cards.length > 0) {
-        // First login with existing local data -> Seed to cloud
-        syncInitialDataToCloud(currentUser.uid, cards, transactions).catch(console.error);
+    let isMounted = true;
+    const checkRedirect = async () => {
+      try {
+        const user = await checkRedirectLoginResult();
+        if (user && isMounted) {
+          showToast(`เข้าสู่ระบบด้วย Google สำเร็จในชื่อ ${user.displayName || user.email}`);
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          showToast(err.message || 'เกิดข้อผิดพลาดในการรับผลการเข้าสู่ระบบ');
+        }
       }
-      setIsSyncing(false);
-    });
+    };
+    checkRedirect();
+    return () => {
+      isMounted = false;
+    };
+  }, [showToast]);
 
-    // 2. Subscribe to Transactions collection
-    const unsubTxs = subscribeUserTransactions(currentUser.uid, (cloudTxs) => {
-      if (cloudTxs.length > 0) {
-        setTransactions(cloudTxs);
+  // Task 4: Network Status & Automatic Sync on Reconnection
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      showToast('สัญญาณอินเทอร์เน็ตกลับมาแล้ว กำลังตรวจสอบและซิงก์ข้อมูลคลาวด์...');
+      if (currentUser) {
+        processSyncQueue(currentUser.uid, {
+          onConflict: () => {
+            setIsConflictModalOpen(true);
+            showToast('ตรวจพบข้อมูลขัดแย้งกับคลาวด์ โปรดตรวจสอบ');
+          },
+        });
       }
-      setIsSyncing(false);
-    });
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      showToast('คุณอยู่ในโหมดออฟไลน์ ข้อมูลที่บันทึกจะถูกเก็บในเครื่องและซิงก์อัตโนมัติเมื่อออนไลน์');
+    };
 
-    // 3. Subscribe to User Profile settings
-    const unsubProfile = subscribeUserProfile(currentUser.uid, (profile) => {
-      if (profile) {
-        if (profile.brandName) setBrandName(profile.brandName);
-        if (profile.brandLogo !== undefined) setBrandLogo(profile.brandLogo);
-        if (profile.brandTagline) setBrandTagline(profile.brandTagline);
-        if (profile.bgImage !== undefined) setBgImage(profile.bgImage);
-        if (profile.bgOpacity !== undefined) setBgOpacity(profile.bgOpacity);
-        if (profile.bgBlur !== undefined) setBgBlur(profile.bgBlur);
-        if (profile.bgPosition) setBgPosition(profile.bgPosition);
-      }
-    });
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
 
-    isInitialLoad = false;
+    const handleQuotaExceeded = () => {
+      showToast('⚠️ พื้นที่จัดเก็บข้อมูลบนอุปกรณ์เต็ม ข้อมูลยังปลอดภัยในหน่วยความจำแต่ไม่สามารถบันทึกลงแคชได้');
+    };
+    window.addEventListener('cardpulse:storage_quota_exceeded', handleQuotaExceeded);
 
     return () => {
-      unsubCards();
-      unsubTxs();
-      unsubProfile();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('cardpulse:storage_quota_exceeded', handleQuotaExceeded);
+    };
+  }, [currentUser, showToast]);
+
+  // Task 2: Subscribe to per-UID Offline Sync Queue
+  useEffect(() => {
+    if (!currentUser) {
+      setSyncStats({ pendingCount: 0, conflictCount: 0, failedCount: 0, isProcessing: false });
+      setConflicts([]);
+      return;
+    }
+
+    const unsub = subscribeSyncQueue(currentUser.uid, (ops, stats) => {
+      setSyncStats(stats);
+      setConflicts(ops.filter((o) => o.status === 'conflict'));
+    });
+
+    return () => unsub();
+  }, [currentUser]);
+
+  // Manual trigger for sync
+  const handleTriggerSync = useCallback(async () => {
+    if (!currentUser) {
+      showToast('กรุณาเข้าสู่ระบบเพื่อเชื่อมต่อคลาวด์');
+      return;
+    }
+    if (!isOnline) {
+      showToast('อุปกรณ์ยังออฟไลน์อยู่ ระบบจะซิงก์อัตโนมัติเมื่อเชื่อมต่ออินเทอร์เน็ต');
+      return;
+    }
+    showToast('กำลังซิงก์ข้อมูลขึ้น Cloud Firestore...');
+    const res = await processSyncQueue(currentUser.uid, {
+      onConflict: () => {
+        setIsConflictModalOpen(true);
+      },
+    });
+    if (res.conflicts > 0) {
+      setIsConflictModalOpen(true);
+      showToast(`ตรวจพบข้อมูลขัดแย้ง ${res.conflicts} รายการ โปรดเลือกเวอร์ชันที่ต้องการเก็บไว้`);
+    } else if (res.failed > 0) {
+      showToast(`ซิงก์ไม่สำเร็จ ${res.failed} รายการ จะลองใหม่อัตโนมัติ`);
+    } else if (res.succeeded > 0) {
+      showToast(`ซิงก์ข้อมูลขึ้นคลาวด์สำเร็จแล้ว (${res.succeeded} รายการ)`);
+    } else {
+      showToast('ข้อมูลทั้งหมดบนเครื่องตรงกับคลาวด์แล้ว');
+    }
+  }, [currentUser, isOnline, showToast]);
+
+  // Task 3: Resolve Conflict handler
+  const handleResolveConflict = async (opId: string, resolution: 'keep_local' | 'keep_server') => {
+    if (!currentUser) return;
+    try {
+      await resolveConflict(currentUser.uid, opId, resolution);
+      showToast(
+        resolution === 'keep_local'
+          ? 'เลือกใช้ข้อมูลบนเครื่องและเขียนทับคลาวด์เรียบร้อยแล้ว'
+          : 'เลือกใช้ข้อมูลบนคลาวด์และยกเลิกการแก้ไขบนเครื่องแล้ว'
+      );
+      if (conflicts.length <= 1) {
+        setIsConflictModalOpen(false);
+      }
+    } catch (err: any) {
+      showToast(err.message || 'เกิดข้อผิดพลาดในการแก้ปัญหาข้อขัดแย้ง');
+    }
+  };
+
+  // Sync with Firestore when user is authenticated (Tasks 1, 2, 3)
+  useEffect(() => {
+    if (!currentUser) {
+      setIsCloudDataReady(false);
+      setIsSyncing(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsSyncing(true);
+    setIsCloudDataReady(false);
+
+    let unsubCards: (() => void) | null = null;
+    let unsubTxs: (() => void) | null = null;
+    let unsubProfile: (() => void) | null = null;
+
+    const setupSync = async () => {
+      try {
+        // Task 1: Check and perform Initial Migration BEFORE starting real-time sync
+        const isReal = checkIfRealUserData(cards, transactions);
+        const migrationResult = await checkAndMigrateUserData(
+          currentUser.uid,
+          cards,
+          transactions,
+          { brandName, brandLogo, brandTagline, bgImage, bgOpacity, bgBlur, bgPosition },
+          isReal
+        );
+
+        if (!isMounted) return;
+
+        if (migrationResult.status === 'migrated_real_data') {
+          showToast(`นำเข้าข้อมูลจากเครื่องของคุณขึ้นสู่คลาวด์เรียบร้อยแล้ว (${migrationResult.cloudCardCount} บัตร)`);
+        }
+
+        let cardsReceived = false;
+        let txsReceived = false;
+        let profileReceived = false;
+
+        const checkAllReady = () => {
+          if (cardsReceived && txsReceived && profileReceived && isMounted) {
+            setIsCloudDataReady(true);
+            setIsSyncing(false);
+          }
+        };
+
+        // Task 2: Subscribe to Cards with Empty Array support
+        unsubCards = subscribeUserCards(currentUser.uid, (cloudCards) => {
+          if (!isMounted) return;
+          // Set cards even if empty array! (Fixes Empty Array Sync Bug)
+          setCards(cloudCards);
+          cardsReceived = true;
+          checkAllReady();
+        });
+
+        // Task 2: Subscribe to Transactions with Empty Array support
+        unsubTxs = subscribeUserTransactions(currentUser.uid, (cloudTxs) => {
+          if (!isMounted) return;
+          // Set transactions even if empty array! (Fixes Empty Array Sync Bug)
+          setTransactions(cloudTxs);
+          txsReceived = true;
+          checkAllReady();
+        });
+
+        // Task 3: Subscribe to User Profile
+        unsubProfile = subscribeUserProfile(currentUser.uid, (profile) => {
+          if (!isMounted) return;
+          if (profile) {
+            if (profile.brandName) setBrandName(profile.brandName);
+            if (profile.brandLogo !== undefined) setBrandLogo(profile.brandLogo);
+            if (profile.brandTagline) setBrandTagline(profile.brandTagline);
+            if (profile.bgImage !== undefined) setBgImage(profile.bgImage);
+            if (profile.bgOpacity !== undefined) setBgOpacity(profile.bgOpacity);
+            if (profile.bgBlur !== undefined) setBgBlur(profile.bgBlur);
+            if (profile.bgPosition) setBgPosition(profile.bgPosition);
+          }
+          profileReceived = true;
+          checkAllReady();
+        });
+      } catch (err) {
+        console.error('Error during initial cloud setup:', err);
+        if (isMounted) {
+          setIsSyncing(false);
+          showToast('เกิดข้อผิดพลาดในการเชื่อมต่อคลาวด์ กำลังทำงานในโหมดออฟไลน์');
+        }
+      }
+    };
+
+    setupSync();
+
+    return () => {
+      isMounted = false;
+      if (unsubCards) unsubCards();
+      if (unsubTxs) unsubTxs();
+      if (unsubProfile) unsubProfile();
     };
   }, [currentUser]);
 
-  // Auth Handlers
+  // Auth Handlers (Phase 2 Enhanced)
   const handleLogin = async () => {
+    if (isAuthLoading) return;
     try {
-      setIsSyncing(true);
-      const user = await loginWithGoogle();
-      if (user) {
-        showToast(`เข้าสู่ระบบในชื่อ ${user.displayName || user.email} สำเร็จ ข้อมูลกำลังซิงก์กับ Firebase`);
+      setIsAuthLoading(true);
+      const env = detectBrowserEnv();
+      if (env.isInAppBrowser) {
+        setInAppNotice({ isOpen: true, appName: env.inAppBrowserName });
+        showToast(
+          `ตรวจพบ ${env.inAppBrowserName || 'In-app'} Browser กรุณากดเมนู (•••) แล้วเลือก "เปิดในเบราว์เซอร์ภายนอก" หรือ Safari / Chrome เพื่อเข้าสู่ระบบด้วย Google`
+        );
+        return;
+      }
+
+      const res = await loginWithGoogle();
+      if (res.redirectInitiated) {
+        showToast('กำลังนำคุณไปยังหน้าเข้าสู่ระบบของ Google...');
+        return;
+      }
+      if (res.user) {
+        showToast(`เข้าสู่ระบบในชื่อ ${res.user.displayName || res.user.email} สำเร็จ`);
       }
     } catch (err: any) {
+      if (err?.code === 'auth/disallowed_useragent') {
+        setInAppNotice({ isOpen: true, appName: 'In-app Browser' });
+      }
       showToast(err.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
     } finally {
-      setIsSyncing(false);
+      setIsAuthLoading(false);
     }
   };
 
   const handleLogout = async () => {
     try {
       await logoutUser();
+      // Task 3: Reset state and LocalStorage for privacy and prevent cross-account bleeding
+      setCurrentUser(null);
+      setIsCloudDataReady(false);
+      setCards(INITIAL_DEMO_CARDS);
+      setTransactions(INITIAL_DEMO_TRANSACTIONS);
+      setBrandName('CardPulse');
+      setBrandLogo(null);
+      setBrandTagline('ระบบติดตามและจัดการค่าบัตรเครดิต');
+      setBgImage(null);
+      setBgOpacity(0.7);
+      setBgBlur(4);
+      setBgPosition(null);
+      setSelectedCardId(null);
+      localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(INITIAL_DEMO_CARDS));
+      localStorage.setItem(STORAGE_KEY_TXS, JSON.stringify(INITIAL_DEMO_TRANSACTIONS));
       showToast('ออกจากระบบเรียบร้อยแล้ว');
     } catch (err: any) {
       showToast(err.message || 'เกิดข้อผิดพลาดในการออกจากระบบ');
     }
   };
 
-  // Save to localStorage when state changes
+  // Task 3 & 4: Save to localStorage safely - prevent transient empty state from overwriting local storage!
   useEffect(() => {
+    if (currentUser && !isCloudDataReady) return;
+    const scopedKey = currentUser ? `${STORAGE_KEY_CARDS}_${currentUser.uid}` : STORAGE_KEY_CARDS;
+    localStorage.setItem(scopedKey, JSON.stringify(cards));
     localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(cards));
-  }, [cards]);
+  }, [cards, currentUser, isCloudDataReady]);
 
   useEffect(() => {
+    if (currentUser && !isCloudDataReady) return;
+    const scopedKey = currentUser ? `${STORAGE_KEY_TXS}_${currentUser.uid}` : STORAGE_KEY_TXS;
+    localStorage.setItem(scopedKey, JSON.stringify(transactions));
     localStorage.setItem(STORAGE_KEY_TXS, JSON.stringify(transactions));
-  }, [transactions]);
+  }, [transactions, currentUser, isCloudDataReady]);
 
   // Handle saving background settings
   const handleSaveBackground = (
@@ -288,13 +592,31 @@ export default function App() {
       localStorage.removeItem(STORAGE_KEY_BG_POSITION);
     }
 
+    const bgPayload = {
+      bgImage: newBg,
+      bgOpacity: newOpacity,
+      bgBlur: newBlur,
+      bgPosition: newPosition,
+    };
+
     if (currentUser) {
-      saveUserProfileToFirestore(currentUser.uid, {
-        bgImage: newBg,
-        bgOpacity: newOpacity,
-        bgBlur: newBlur,
-        bgPosition: newPosition,
-      }).catch(console.error);
+      if (isOnline && isCloudDataReady) {
+        saveUserProfileToFirestore(currentUser.uid, bgPayload).catch(() => {
+          enqueueOperation(currentUser.uid, {
+            entityType: 'profile',
+            documentId: 'profile',
+            operationType: 'update',
+            payload: bgPayload,
+          });
+        });
+      } else {
+        enqueueOperation(currentUser.uid, {
+          entityType: 'profile',
+          documentId: 'profile',
+          operationType: 'update',
+          payload: bgPayload,
+        });
+      }
     }
 
     showToast(newBg ? 'บันทึกภาพพื้นหลังเรียบร้อยแล้ว' : 'รีเซ็ตภาพพื้นหลังเป็นค่าเริ่มต้นแล้ว');
@@ -318,12 +640,30 @@ export default function App() {
     }
     localStorage.setItem(STORAGE_KEY_BRAND_TAGLINE, newTagline);
 
+    const brandPayload = {
+      brandName: newName,
+      brandLogo: newLogo,
+      brandTagline: newTagline,
+    };
+
     if (currentUser) {
-      saveUserProfileToFirestore(currentUser.uid, {
-        brandName: newName,
-        brandLogo: newLogo,
-        brandTagline: newTagline,
-      }).catch(console.error);
+      if (isOnline && isCloudDataReady) {
+        saveUserProfileToFirestore(currentUser.uid, brandPayload).catch(() => {
+          enqueueOperation(currentUser.uid, {
+            entityType: 'profile',
+            documentId: 'profile',
+            operationType: 'update',
+            payload: brandPayload,
+          });
+        });
+      } else {
+        enqueueOperation(currentUser.uid, {
+          entityType: 'profile',
+          documentId: 'profile',
+          operationType: 'update',
+          payload: brandPayload,
+        });
+      }
     }
 
     showToast('บันทึกการตั้งค่าชื่อแบรนด์และโลโก้เรียบร้อยแล้ว');
@@ -403,9 +743,7 @@ export default function App() {
               totalInstallments: txData.totalInstallments,
               monthlyInstallmentAmount: txData.monthlyInstallmentAmount,
             };
-            if (currentUser) {
-              saveUserTransactionToFirestore(currentUser.uid, updatedItem).catch(console.error);
-            }
+            syncOrQueueTransaction(updatedItem, 'update');
             return updatedItem;
           }
           return t.id === txData.id ? { ...t, ...txData } : t;
@@ -415,9 +753,7 @@ export default function App() {
         updatedTxs = transactions.map((t) => {
           if (t.id === txData.id) {
             const updatedItem: Transaction = { ...t, ...txData };
-            if (currentUser) {
-              saveUserTransactionToFirestore(currentUser.uid, updatedItem).catch(console.error);
-            }
+            syncOrQueueTransaction(updatedItem, 'update');
             return updatedItem;
           }
           return t;
@@ -429,11 +765,9 @@ export default function App() {
       if (txData.isInstallment && options?.autoGenerateRemaining) {
         const fullSeries = generateInstallmentSeries(txData, true);
         updatedTxs = [...transactions, ...fullSeries];
-        if (currentUser) {
-          fullSeries.forEach((item) => {
-            saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
-          });
-        }
+        fullSeries.forEach((item) => {
+          syncOrQueueTransaction(item, 'create');
+        });
         showToast(
           `บันทึกรายการผ่อนชำระและสร้างครบ ${fullSeries.length} งวดล่วงหน้าเรียบร้อยแล้ว`
         );
@@ -442,11 +776,10 @@ export default function App() {
           ...txData,
           id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
           createdAt: new Date().toISOString(),
+          version: 1,
         };
         updatedTxs = [newTx, ...transactions];
-        if (currentUser) {
-          saveUserTransactionToFirestore(currentUser.uid, newTx).catch(console.error);
-        }
+        syncOrQueueTransaction(newTx, 'create');
         showToast('บันทึกรายการใช้จ่ายใหม่เรียบร้อยแล้ว');
       }
     }
@@ -454,14 +787,79 @@ export default function App() {
     setTransactions(updatedTxs);
   };
 
+  // Helpers for Offline Sync Queue of Transactions (Phase 3 Tasks 1, 2, 3)
+  const syncOrQueueTransaction = useCallback(
+    (tx: Transaction, opType: 'create' | 'update') => {
+      if (!currentUser) return;
+      if (isOnline && isCloudDataReady) {
+        saveUserTransactionToFirestore(
+          currentUser.uid,
+          tx,
+          opType === 'update' ? tx.version : undefined
+        ).catch((err: any) => {
+          if (err?.code === 'DATA_CONFLICT') {
+            enqueueOperation(currentUser.uid, {
+              entityType: 'transaction',
+              documentId: tx.id,
+              operationType: opType,
+              payload: tx,
+              baseVersion: tx.version || 1,
+            });
+            setIsConflictModalOpen(true);
+            showToast(`ตรวจพบข้อมูลรายการ "${tx.title}" ขัดแย้งกับคลาวด์`);
+          } else {
+            enqueueOperation(currentUser.uid, {
+              entityType: 'transaction',
+              documentId: tx.id,
+              operationType: opType,
+              payload: tx,
+              baseVersion: tx.version || 1,
+            });
+          }
+        });
+      } else {
+        enqueueOperation(currentUser.uid, {
+          entityType: 'transaction',
+          documentId: tx.id,
+          operationType: opType,
+          payload: tx,
+          baseVersion: tx.version || 1,
+        });
+      }
+    },
+    [currentUser, isOnline, isCloudDataReady, showToast]
+  );
+
+  const deleteOrQueueTransaction = useCallback(
+    (txId: string) => {
+      if (!currentUser) return;
+      if (isOnline && isCloudDataReady) {
+        deleteUserTransactionFromFirestore(currentUser.uid, txId).catch(() => {
+          enqueueOperation(currentUser.uid, {
+            entityType: 'transaction',
+            documentId: txId,
+            operationType: 'delete',
+            payload: null,
+          });
+        });
+      } else {
+        enqueueOperation(currentUser.uid, {
+          entityType: 'transaction',
+          documentId: txId,
+          operationType: 'delete',
+          payload: null,
+        });
+      }
+    },
+    [currentUser, isOnline, isCloudDataReady]
+  );
+
   // Toggle Transaction Paid status
   const handleTogglePaid = (txId: string) => {
     const updated = transactions.map((t) => {
       if (t.id === txId) {
         const item = { ...t, isPaid: !t.isPaid };
-        if (currentUser) {
-          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
-        }
+        syncOrQueueTransaction(item, 'update');
         return item;
       }
       return t;
@@ -477,9 +875,7 @@ export default function App() {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if (t.cardId === cardId && (txCycle === cycleMonth || t.billingCycleMonth === cycleMonth)) {
         const item = { ...t, isPaid: true, paidDate: todayStr };
-        if (currentUser) {
-          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
-        }
+        syncOrQueueTransaction(item, 'update');
         return item;
       }
       return t;
@@ -496,9 +892,7 @@ export default function App() {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if (t.cardId === cardId && (txCycle === cycleMonth || t.billingCycleMonth === cycleMonth)) {
         const item = { ...t, isPaid: false, paidDate: undefined };
-        if (currentUser) {
-          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
-        }
+        syncOrQueueTransaction(item, 'update');
         return item;
       }
       return t;
@@ -517,9 +911,7 @@ export default function App() {
       if ((txCycle === cycleMonth || t.billingCycleMonth === cycleMonth) && !isFutureInstallmentHidden(t, cards)) {
         if (!t.isPaid) affectedCount++;
         const item = { ...t, isPaid: true, paidDate: todayStr };
-        if (currentUser) {
-          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
-        }
+        syncOrQueueTransaction(item, 'update');
         return item;
       }
       return t;
@@ -535,9 +927,7 @@ export default function App() {
       const txCycle = getTransactionBillingCycleMonth(t, cards);
       if (txCycle === cycleMonth || t.billingCycleMonth === cycleMonth) {
         const item = { ...t, isPaid: false, paidDate: undefined };
-        if (currentUser) {
-          saveUserTransactionToFirestore(currentUser.uid, item).catch(console.error);
-        }
+        syncOrQueueTransaction(item, 'update');
         return item;
       }
       return t;
@@ -572,9 +962,7 @@ export default function App() {
               onClick: () => {
                 const updated = transactions.filter((t) => t.id !== tx.id);
                 setTransactions(updated);
-                if (currentUser) {
-                  deleteUserTransactionFromFirestore(currentUser.uid, tx.id).catch(console.error);
-                }
+                deleteOrQueueTransaction(tx.id);
                 showToast(`ลบเฉพาะงวดที่ ${tx.currentInstallment || 1} เรียบร้อยแล้ว`);
                 setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
               },
@@ -586,14 +974,12 @@ export default function App() {
             ? transactions.filter((t) => t.installmentGroupId !== tx.installmentGroupId)
             : transactions.filter((t) => t.id !== tx.id);
         setTransactions(updated);
-        if (currentUser) {
-          if (isPlan && groupCount > 1) {
-            planGroup.forEach((p) => {
-              deleteUserTransactionFromFirestore(currentUser.uid, p.id).catch(console.error);
-            });
-          } else {
-            deleteUserTransactionFromFirestore(currentUser.uid, tx.id).catch(console.error);
-          }
+        if (isPlan && groupCount > 1) {
+          planGroup.forEach((p) => {
+            deleteOrQueueTransaction(p.id);
+          });
+        } else {
+          deleteOrQueueTransaction(tx.id);
         }
         showToast(
           isPlan && groupCount > 1
@@ -605,11 +991,13 @@ export default function App() {
     });
   };
 
-  // Add / Edit Card
+  // Add / Edit Card (Conforming to Phase 3 Tasks 1, 2, 3)
   const handleSaveCard = (cardData: Omit<CreditCard, 'id'> & { id?: string }) => {
     let updatedCards: CreditCard[];
     let targetCard: CreditCard;
-    if (cardData.id) {
+    const isEditing = Boolean(cardData.id);
+
+    if (isEditing) {
       // Edit
       targetCard = { ...cardData } as CreditCard;
       updatedCards = cards.map((c) =>
@@ -621,18 +1009,60 @@ export default function App() {
       targetCard = {
         ...cardData,
         id: 'card-' + Date.now(),
+        orderIndex: cards.length,
+        version: 1,
       };
       updatedCards = [...cards, targetCard];
       showToast('เพิ่มบัตรเครดิตใหม่เรียบร้อยแล้ว');
     }
 
     setCards(updatedCards);
+
+    // Save to Firestore or Sync Queue
     if (currentUser) {
-      saveUserCardToFirestore(currentUser.uid, targetCard).catch(console.error);
+      if (isOnline && isCloudDataReady) {
+        saveUserCardToFirestore(
+          currentUser.uid,
+          targetCard,
+          isEditing ? targetCard.version : undefined
+        ).catch((err: any) => {
+          if (err?.code === 'DATA_CONFLICT') {
+            enqueueOperation(currentUser.uid, {
+              entityType: 'card',
+              documentId: targetCard.id,
+              operationType: isEditing ? 'update' : 'create',
+              payload: targetCard,
+              baseVersion: targetCard.version || 1,
+            });
+            setIsConflictModalOpen(true);
+            showToast('ตรวจพบข้อมูลบัตรขัดแย้งกับคลาวด์ โปรดตรวจสอบ');
+          } else {
+            // Network failure or offline -> enqueue operation
+            enqueueOperation(currentUser.uid, {
+              entityType: 'card',
+              documentId: targetCard.id,
+              operationType: isEditing ? 'update' : 'create',
+              payload: targetCard,
+              baseVersion: targetCard.version || 1,
+            });
+            showToast('บันทึกในเครื่องแล้ว และเพิ่มลงคิวรอซิงก์');
+          }
+        });
+      } else {
+        // Device is offline or cloud not ready
+        enqueueOperation(currentUser.uid, {
+          entityType: 'card',
+          documentId: targetCard.id,
+          operationType: isEditing ? 'update' : 'create',
+          payload: targetCard,
+          baseVersion: targetCard.version || 1,
+        });
+        showToast('บันทึกในเครื่องเรียบร้อยแล้ว (จะซิงก์อัตโนมัติเมื่อออนไลน์)');
+      }
     }
   };
 
-  // Delete Card with Confirmation Modal
+  // Delete Card with Confirmation Modal (Phase 3 Offline Sync Queue)
   const handleDeleteCard = (card: CreditCard) => {
     const txCount = transactions.filter((t) => t.cardId === card.id).length;
     setConfirmDialog({
@@ -645,15 +1075,49 @@ export default function App() {
       confirmLabel: 'ยืนยันลบบัตร',
       onConfirm: () => {
         const updatedCards = cards.filter((c) => c.id !== card.id);
+        const relatedTxs = transactions.filter((t) => t.cardId === card.id);
         const updatedTxs = transactions.filter((t) => t.cardId !== card.id);
         setCards(updatedCards);
         setTransactions(updatedTxs);
         if (selectedCardId === card.id) setSelectedCardId(null);
+
         if (currentUser) {
-          deleteUserCardFromFirestore(currentUser.uid, card.id).catch(console.error);
-          transactions
-            .filter((t) => t.cardId === card.id)
-            .forEach((t) => deleteUserTransactionFromFirestore(currentUser.uid, t.id).catch(console.error));
+          if (isOnline && isCloudDataReady) {
+            deleteUserCardFromFirestore(currentUser.uid, card.id).catch(() => {
+              enqueueOperation(currentUser.uid, {
+                entityType: 'card',
+                documentId: card.id,
+                operationType: 'delete',
+                payload: null,
+              });
+            });
+            relatedTxs.forEach((t) => {
+              deleteUserTransactionFromFirestore(currentUser.uid, t.id).catch(() => {
+                enqueueOperation(currentUser.uid, {
+                  entityType: 'transaction',
+                  documentId: t.id,
+                  operationType: 'delete',
+                  payload: null,
+                });
+              });
+            });
+          } else {
+            // Offline
+            enqueueOperation(currentUser.uid, {
+              entityType: 'card',
+              documentId: card.id,
+              operationType: 'delete',
+              payload: null,
+            });
+            relatedTxs.forEach((t) => {
+              enqueueOperation(currentUser.uid, {
+                entityType: 'transaction',
+                documentId: t.id,
+                operationType: 'delete',
+                payload: null,
+              });
+            });
+          }
         }
         showToast(`ลบบัตร ${card.name} เรียบร้อยแล้ว`);
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
@@ -661,11 +1125,61 @@ export default function App() {
     });
   };
 
-  // Reorder Cards
+  // Task 5: Reorder Cards with Firestore sync
   const handleReorderCards = (newCards: CreditCard[]) => {
-    setCards(newCards);
-    localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(newCards));
+    const cardsWithOrder = newCards.map((c, idx) => ({ ...c, orderIndex: idx }));
+    setCards(cardsWithOrder);
+    localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(cardsWithOrder));
+    if (currentUser && isCloudDataReady) {
+      saveCardOrderToFirestore(currentUser.uid, cardsWithOrder).catch((err) => {
+        console.error('Failed to sync card order to Firestore:', err);
+      });
+    }
     showToast('จัดลำดับบัตรเครดิตเรียบร้อยแล้ว');
+  };
+
+  // Production Clean Start Handler (Purges test/demo data on Cloud and Local for clean start)
+  const handleCleanStart = () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'เริ่มต้นใช้งานจริง (Production Clean Start)',
+      message: 'คุณต้องการล้างข้อมูลบัตรเครดิต รายการใช้จ่าย และข้อมูลตัวอย่างทั้งหมด เพื่อเริ่มต้นบันทึกข้อมูลจริงตั้งแต่ศูนย์ ใช่หรือไม่?',
+      detail: currentUser
+        ? `ระบบจะล้างข้อมูลบน Cloud Firestore ของบัญชี (${currentUser.email || currentUser.uid}) และข้อมูลในเครื่องนี้อย่างถาวร`
+        : 'ระบบจะล้างข้อมูลแคชและข้อมูลตัวอย่างในเครื่องนี้อย่างถาวร',
+      confirmLabel: 'ยืนยันล้างข้อมูลเริ่มใหม่',
+      onConfirm: async () => {
+        try {
+          if (currentUser) {
+            showToast('กำลังล้างข้อมูลบน Cloud Firestore...');
+            const res = await cleanStartUserCloudData(currentUser.uid);
+            clearSyncQueue(currentUser.uid);
+            showToast(`ล้างข้อมูลบนคลาวด์สำเร็จ (ลบ ${res.deletedCards} บัตร, ${res.deletedTxs} รายการ)`);
+          }
+
+          // Clear local states
+          setCards([]);
+          setTransactions([]);
+          setSelectedCardId(null);
+
+          // Clear local storage
+          localStorage.removeItem(STORAGE_KEY_CARDS);
+          localStorage.removeItem(STORAGE_KEY_TXS);
+          if (currentUser) {
+            localStorage.removeItem(`cardpulse_sync_queue_${currentUser.uid}`);
+            localStorage.removeItem(`cardpulse_sync_lock_${currentUser.uid}`);
+          }
+          localStorage.setItem(STORAGE_KEY_PRODUCTION_CLEAN, 'true');
+
+          showToast('CardPulse ว่างพร้อมสำหรับการบันทึกข้อมูลจริงตั้งแต่ศูนย์เรียบร้อยแล้ว');
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        } catch (err: any) {
+          console.error('Clean start failed:', err);
+          showToast(err.message || 'เกิดข้อผิดพลาดในการล้างข้อมูล');
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        }
+      },
+    });
   };
 
   return (
@@ -736,6 +1250,14 @@ export default function App() {
         onLogin={handleLogin}
         onLogout={handleLogout}
         isSyncing={isSyncing}
+        isAuthLoading={isAuthLoading}
+        isOnline={isOnline}
+        syncState={syncState}
+        pendingCount={syncStats.pendingCount}
+        conflictCount={syncStats.conflictCount}
+        onTriggerSync={handleTriggerSync}
+        onOpenConflictModal={() => setIsConflictModalOpen(true)}
+        onCleanStart={handleCleanStart}
       />
 
       {/* Mobile Tab Bar */}
@@ -947,6 +1469,69 @@ export default function App() {
         currentBlur={bgBlur}
         currentPosition={bgPosition}
         onSaveBackground={handleSaveBackground}
+      />
+
+      {/* In-App Browser (LINE / Facebook / Instagram) Notice Modal */}
+      {inAppNotice?.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-black/80 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+              <ExternalLink className="w-6 h-6" />
+            </div>
+
+            <div className="text-center space-y-2">
+              <h3 className="text-lg font-bold text-white">
+                คำแนะนำ: เปิดในเบราว์เซอร์หลัก
+              </h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                ระบบตรวจพบว่าคุณกำลังเปิดแอปผ่าน{' '}
+                <span className="font-semibold text-amber-400">
+                  {inAppNotice.appName || 'In-app'} Browser
+                </span>
+                <br />
+                Google ไม่อนุญาตให้ล็อกอินผ่านเบราว์เซอร์ภายในแอปเพื่อความปลอดภัยของบัญชี
+              </p>
+            </div>
+
+            <div className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-3.5 space-y-2 text-xs text-slate-300">
+              <div className="font-semibold text-indigo-300">วิธีเปิดใน Safari หรือ Chrome:</div>
+              <ol className="list-decimal list-inside space-y-1 text-slate-400 text-[11px] leading-relaxed">
+                <li>แตะปุ่มจุดสามจุด <span className="text-white font-bold">(•••)</span> หรือไอคอนแชร์ที่มุมจอ</li>
+                <li>เลือก <span className="text-white font-medium">"เปิดใน Safari"</span> หรือ <span className="text-white font-medium">"เปิดด้วยเบราว์เซอร์ภายนอก / Chrome"</span></li>
+                <li>คุณจะสามารถเข้าสู่ระบบและเชื่อมต่อ Firebase ได้อย่างเสถียร 100%</li>
+              </ol>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(window.location.href);
+                  showToast('คัดลอกลิงก์เรียบร้อยแล้ว นำไปวางใน Safari หรือ Chrome ได้เลย');
+                }}
+                className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>คัดลอกลิงก์</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setInAppNotice(null)}
+                className="py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition cursor-pointer"
+              >
+                เข้าใจแล้ว
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Task 3 & 6: Conflict Resolution Modal */}
+      <ConflictModal
+        isOpen={isConflictModalOpen}
+        onClose={() => setIsConflictModalOpen(false)}
+        conflicts={conflicts}
+        onResolve={handleResolveConflict}
       />
       </div>
     </div>

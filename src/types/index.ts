@@ -10,6 +10,9 @@ export interface CreditCard {
   accentColor: string;
   cardType?: string; // VISA, Mastercard, JCB, UnionPay, AMEX, or custom
   status?: 'active' | 'inactive';
+  orderIndex?: number; // 0-based display order index
+  version?: number; // Optimistic concurrency version
+  updatedAt?: string;
 }
 
 export type TransactionCategory =
@@ -42,6 +45,8 @@ export interface Transaction {
   isPaid?: boolean;
   paidDate?: string;
   createdAt: string;
+  version?: number; // Optimistic concurrency version
+  updatedAt?: string;
 }
 
 export type AlertSeverity = 'overdue' | 'critical' | 'warning' | 'normal' | 'paid';

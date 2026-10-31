@@ -16,6 +16,7 @@ import {
   Grid3X3,
   Layers,
 } from 'lucide-react';
+import { compressBackgroundImage } from '../utils/imageCompressor';
 
 export interface BackgroundPosition {
   x: number; // percentage (0 to 100) or offset in px
@@ -134,72 +135,28 @@ export const BackgroundModal: React.FC<BackgroundModalProps> = ({
     setPanOffset({ x: 0, y: 0 });
   };
 
-  // Compress & convert file to data URL
-  const handleFileUpload = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setErrorMsg('กรุณาเลือกไฟล์รูปภาพเท่านั้น (JPG, PNG, WebP)');
+  // Task 5: Compress & convert file to data URL (<= 500KB)
+  const handleFileUpload = async (file: File) => {
+    if (!file.type.match(/^image\/(png|jpeg|jpg|webp)$/i)) {
+      setErrorMsg('กรุณาเลือกไฟล์รูปภาพที่รองรับ (PNG, JPEG, WebP)');
       return;
     }
 
     setIsUploading(true);
     setErrorMsg(null);
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target?.result as string;
-      if (!result) {
-        setIsUploading(false);
-        setErrorMsg('ไม่สามารถอ่านไฟล์ได้');
-        return;
-      }
-
-      // Pre-process and scale large photos to max 1920px for optimal performance
-      const img = new Image();
-      img.onload = () => {
-        const maxWidth = 1920;
-        const maxHeight = 1080;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > maxWidth || height > maxHeight) {
-          if (width / height > maxWidth / maxHeight) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          } else {
-            width = Math.round((width * maxHeight) / height);
-            height = maxHeight;
-          }
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.88);
-          setSelectedBg(compressedDataUrl);
-        } else {
-          setSelectedBg(result);
-        }
-        // Reset pan & zoom for the freshly uploaded image
-        setZoom(1.0);
-        setPanOffset({ x: 0, y: 0 });
-        setIsUploading(false);
-      };
-      img.onerror = () => {
-        setSelectedBg(result);
-        setZoom(1.0);
-        setPanOffset({ x: 0, y: 0 });
-        setIsUploading(false);
-      };
-      img.src = result;
-    };
-    reader.onerror = () => {
+    try {
+      const compressed = await compressBackgroundImage(file);
+      setSelectedBg(compressed.dataUrl);
+      // Reset pan & zoom for the freshly uploaded image
+      setZoom(1.0);
+      setPanOffset({ x: 0, y: 0 });
+    } catch (err: any) {
+      console.error('Background compression error:', err);
+      setErrorMsg(err.message || 'เกิดข้อผิดพลาดในการอัปโหลดและบีบอัดรูปภาพ');
+    } finally {
       setIsUploading(false);
-      setErrorMsg('เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ');
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -270,10 +227,11 @@ export const BackgroundModal: React.FC<BackgroundModalProps> = ({
         const drawY = (canvasH - finalDrawHeight) / 2 + canvasPanY;
 
         ctx.drawImage(img, drawX, drawY, finalDrawWidth, finalDrawHeight);
-        const framedDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+        const rawFramedUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const finalCompressed = await compressBackgroundImage(rawFramedUrl);
 
-        // Save framed result
-        onSaveBackground(framedDataUrl, opacity, blur, positionData);
+        // Save framed result (guaranteed <= 500KB)
+        onSaveBackground(finalCompressed.dataUrl, opacity, blur, positionData);
       } else {
         onSaveBackground(selectedBg, opacity, blur, positionData);
       }

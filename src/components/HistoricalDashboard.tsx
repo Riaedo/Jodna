@@ -216,8 +216,21 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({
         </div>
       </div>
 
-      {/* Main Historical Trend Chart (Interactive Bar Visualization) */}
-      <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+      {/* Main Historical Visualizations or Empty State */}
+      {transactions.length === 0 ? (
+        <div className="p-12 text-center rounded-2xl bg-slate-900/40 border border-dashed border-slate-700/80">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-3 text-indigo-400">
+            <BarChart3 className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-white tracking-tight">ยังไม่มีประวัติการใช้จ่ายในระบบ</h3>
+          <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto leading-relaxed">
+            ยอดรวมเริ่มต้นเป็น 0.00 ฿ เมื่อคุณเริ่มบันทึกรายการใช้จ่ายบัตรเครดิต กราฟแนวโน้มและการวิเคราะห์สัดส่วนรายหมวดหมู่จะแสดงผลที่นี่โดยอัตโนมัติ
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Main Historical Trend Chart (Interactive Bar Visualization) */}
+          <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
             <h3 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
@@ -516,6 +529,8 @@ export const HistoricalDashboard: React.FC<HistoricalDashboardProps> = ({
           </table>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

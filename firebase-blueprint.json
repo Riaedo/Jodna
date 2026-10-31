@@ -41,6 +41,19 @@
           "type": "object",
           "description": "Positioning and scaling coordinates for background image"
         },
+        "isMigrated": {
+          "type": "boolean",
+          "description": "Flag indicating initial data migration status"
+        },
+        "migrationVersion": {
+          "type": "integer",
+          "description": "Migration schema version"
+        },
+        "migratedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when migration completed"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -114,6 +127,14 @@
           "type": "string",
           "enum": ["active", "inactive"],
           "description": "Active state of the card"
+        },
+        "orderIndex": {
+          "type": "integer",
+          "description": "Display order index for card slider"
+        },
+        "version": {
+          "type": "integer",
+          "description": "Optimistic concurrency version number"
         },
         "createdAt": {
           "type": "string",
@@ -209,6 +230,10 @@
           "type": "string",
           "maxLength": 20,
           "description": "Date statement or item was marked paid"
+        },
+        "version": {
+          "type": "integer",
+          "description": "Optimistic concurrency version number"
         },
         "createdAt": {
           "type": "string",
