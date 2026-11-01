@@ -553,6 +553,104 @@ export const saveUserTransactionToFirestore = async (
   }
 };
 
+export const saveBatchTransactionsToFirestore = async (
+  userId: string,
+  transactions: Transaction[]
+): Promise<{ success: boolean; updatedCount: number }> => {
+  if (transactions.length === 0) return { success: true, updatedCount: 0 };
+
+  // 1. Strict UID Validation
+  if (!userId || typeof userId !== 'string' || userId.trim() === '') {
+    throw new Error('Unauthorized: Missing or invalid UID for batch update');
+  }
+  if (auth.currentUser && auth.currentUser.uid !== userId) {
+    throw new Error(`Unauthorized: UID mismatch (expected ${auth.currentUser.uid}, got ${userId})`);
+  }
+
+  const path = `users/${userId}/transactions`;
+
+  try {
+    // 2. Execute under Firestore runTransaction to ensure atomic OCC version check and commit
+    await runTransaction(db, async (txn) => {
+      // Step A: Read Phase - Read all documents and verify optimistic concurrency versions
+      const planOperations: {
+        docRef: any;
+        tx: Transaction;
+        newVersion: number;
+        existingData: any;
+      }[] = [];
+
+      for (const tx of transactions) {
+        const docRef = doc(db, 'users', userId, 'transactions', tx.id);
+        const snap = await txn.get(docRef);
+
+        let newVersion = 1;
+        let existingData: any = null;
+
+        if (snap.exists()) {
+          existingData = snap.data();
+          const currentVer = typeof existingData.version === 'number' ? existingData.version : 1;
+          const expectedVer = tx.version !== undefined ? tx.version : 1;
+
+          // Optimistic Concurrency Check: If current server version is greater than base version, conflict!
+          if (currentVer > expectedVer) {
+            const conflictErr = new Error(
+              `DATA_CONFLICT: Transaction "${tx.title}" (งวดที่ ${tx.currentInstallment || 1}) was modified by another session (v${currentVer} > v${expectedVer})`
+            );
+            (conflictErr as any).code = 'DATA_CONFLICT';
+            (conflictErr as any).conflictingTxId = tx.id;
+            (conflictErr as any).serverData = existingData;
+            (conflictErr as any).localData = tx;
+            throw conflictErr;
+          }
+          newVersion = currentVer + 1;
+        } else {
+          newVersion = 1;
+        }
+
+        planOperations.push({ docRef, tx, newVersion, existingData });
+      }
+
+      // Step B: Write Phase - All OCC checks succeeded; write all items atomically!
+      for (const { docRef, tx, newVersion, existingData } of planOperations) {
+        const payload: Record<string, any> = {
+          id: tx.id,
+          userId,
+          cardId: tx.cardId,
+          date: tx.date,
+          title: tx.title,
+          category: tx.category,
+          amount: Number(tx.amount),
+          billingCycleMonth: tx.billingCycleMonth,
+          isPaid: !!tx.isPaid,
+          version: newVersion,
+          updatedAt: serverTimestamp(),
+        };
+        if (tx.isInstallment !== undefined) payload.isInstallment = tx.isInstallment;
+        if (tx.totalInstallments !== undefined) payload.totalInstallments = Number(tx.totalInstallments);
+        if (tx.currentInstallment !== undefined) payload.currentInstallment = Number(tx.currentInstallment);
+        if (tx.monthlyInstallmentAmount !== undefined) payload.monthlyInstallmentAmount = Number(tx.monthlyInstallmentAmount);
+        if (tx.installmentGroupId) payload.installmentGroupId = tx.installmentGroupId;
+        if (tx.note) payload.note = tx.note;
+        if (tx.tags && Array.isArray(tx.tags)) payload.tags = tx.tags.slice(0, 10);
+        if (tx.paidDate) payload.paidDate = tx.paidDate;
+        if (!existingData) {
+          payload.createdAt = serverTimestamp();
+        }
+
+        txn.set(docRef, payload, { merge: true });
+      }
+    });
+
+    return { success: true, updatedCount: transactions.length };
+  } catch (error: any) {
+    if (error?.code === 'DATA_CONFLICT') {
+      throw error;
+    }
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+};
+
 export const deleteUserTransactionFromFirestore = async (
   userId: string,
   transactionId: string

@@ -784,11 +784,123 @@ export const getInstallmentDate = (startDateStr: string, offsetMonths: number): 
     targetMonth -= 12;
     targetYear += 1;
   }
+  while (targetMonth < 1) {
+    targetMonth += 12;
+    targetYear -= 1;
+  }
 
   const daysInMonth = new Date(targetYear, targetMonth, 0).getDate();
   const targetDay = Math.min(startDay, daysInMonth);
 
   return `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+};
+
+/**
+ * Calculates the exact month difference between two billing cycles (YYYY-MM).
+ * Positive if toCycle is after fromCycle, negative if before.
+ */
+export const calculateMonthDifference = (fromCycle: string, toCycle: string): number => {
+  if (!fromCycle || !toCycle) return 0;
+  const [fromY, fromM] = fromCycle.split('-').map(Number);
+  const [toY, toM] = toCycle.split('-').map(Number);
+  if (isNaN(fromY) || isNaN(fromM) || isNaN(toY) || isNaN(toM)) return 0;
+  return (toY - fromY) * 12 + (toM - fromM);
+};
+
+export interface ShiftScheduleResult {
+  shiftedItems: Transaction[];
+  monthDelta: number;
+  hasCollision: boolean;
+  collisionDetails?: {
+    cycleMonth: string;
+    conflictingInstallmentNum: number;
+    targetInstallmentNum: number;
+  };
+  hasPaidSubsequent: boolean;
+  paidSubsequentNums: number[];
+}
+
+/**
+ * Calculates the shifted schedule for an entire installment plan when moving installment N.
+ * - Leaves prior installments (< N) completely unchanged.
+ * - Shifts installment N and all subsequent installments (>= N) by monthDelta.
+ * - Detects collisions within the same plan (e.g. if moving N backward into N-1's cycle).
+ * - Identifies if any subsequent installments are already paid.
+ */
+export const calculateShiftedInstallmentSchedule = (
+  allPlanItems: Transaction[],
+  targetInstallment: Transaction,
+  newCycle: string,
+  newDate: string,
+  newNote?: string
+): ShiftScheduleResult => {
+  const currentInst = targetInstallment.currentInstallment || 1;
+  const oldCycle = targetInstallment.billingCycleMonth || (targetInstallment.date ? targetInstallment.date.slice(0, 7) : '');
+  const monthDelta = calculateMonthDifference(oldCycle, newCycle);
+
+  const projectedCycles = new Map<number, string>();
+  const shiftedItems: Transaction[] = [];
+  const paidSubsequentNums: number[] = [];
+
+  const sortedPlan = [...allPlanItems].sort(
+    (a, b) => (a.currentInstallment || 1) - (b.currentInstallment || 1)
+  );
+
+  for (const item of sortedPlan) {
+    const instNum = item.currentInstallment || 1;
+    if (instNum < currentInst) {
+      projectedCycles.set(instNum, item.billingCycleMonth);
+    } else if (item.id === targetInstallment.id) {
+      projectedCycles.set(instNum, newCycle);
+      const updatedItem: Transaction = {
+        ...item,
+        billingCycleMonth: newCycle,
+        date: newDate,
+        note: newNote !== undefined ? (newNote.trim() || undefined) : item.note,
+      };
+      shiftedItems.push(updatedItem);
+    } else {
+      const nextCycle = getNextBillingMonth(item.billingCycleMonth, monthDelta);
+      projectedCycles.set(instNum, nextCycle);
+
+      if (item.isPaid) {
+        paidSubsequentNums.push(instNum);
+      }
+
+      const updatedItem: Transaction = {
+        ...item,
+        billingCycleMonth: nextCycle,
+        date: item.date, // Strictly preserve original transaction purchase date!
+      };
+      shiftedItems.push(updatedItem);
+    }
+  }
+
+  let hasCollision = false;
+  let collisionDetails: ShiftScheduleResult['collisionDetails'] = undefined;
+
+  const cycleToInstMap = new Map<string, number>();
+  for (const [instNum, cycle] of projectedCycles.entries()) {
+    if (cycleToInstMap.has(cycle)) {
+      hasCollision = true;
+      collisionDetails = {
+        cycleMonth: cycle,
+        conflictingInstallmentNum: cycleToInstMap.get(cycle)!,
+        targetInstallmentNum: instNum,
+      };
+      break;
+    }
+    cycleToInstMap.set(cycle, instNum);
+  }
+
+  return {
+    shiftedItems,
+    monthDelta,
+    hasCollision,
+    collisionDetails,
+    hasPaidSubsequent: paidSubsequentNums.length > 0,
+    paidSubsequentNums,
+  };
 };
 
 /**
@@ -1209,17 +1321,49 @@ export const calculateHistoricalDashboard = (
   transactions: Transaction[],
   allMonths: string[], // sorted descending e.g. ["2026-10", "2026-09", ...]
   timeframe: '3m' | '6m' | '12m' | 'all',
-  cards?: CreditCard[]
+  cards?: CreditCard[],
+  referenceDate: Date = new Date()
 ): HistoricalDashboardData => {
+  const refYear = referenceDate.getFullYear();
+  const refMonth = referenceDate.getMonth() + 1; // 1-12
+  const currentCycleStr = `${refYear}-${String(refMonth).padStart(2, '0')}`;
+
+  // TASK 1: Ensure NO future months exist in the dashboard analytics.
+  // Generate exact historical continuous periods ending at currentCycleStr.
   let targetMonths: string[];
   if (timeframe === '3m') {
-    targetMonths = allMonths.slice(0, 3);
+    // Current 1 + 2 past = 3 months
+    targetMonths = [0, -1, -2].map((offset) => getNextBillingMonth(currentCycleStr, offset));
   } else if (timeframe === '6m') {
-    targetMonths = allMonths.slice(0, 6);
+    // Current 1 + 5 past = 6 months
+    targetMonths = [0, -1, -2, -3, -4, -5].map((offset) => getNextBillingMonth(currentCycleStr, offset));
   } else if (timeframe === '12m') {
-    targetMonths = allMonths.slice(0, 12);
+    // Current 1 + 11 past = 12 months
+    targetMonths = Array.from({ length: 12 }, (_, i) => getNextBillingMonth(currentCycleStr, -i));
   } else {
-    targetMonths = [...allMonths];
+    // "all": from earliest past transaction cycle up to current cycle (strictly no future cycles)
+    let earliestCycle = currentCycleStr;
+    transactions.forEach((tx) => {
+      const cycle = cards ? getTransactionBillingCycleMonth(tx, cards) : (tx.billingCycleMonth || (tx.date ? tx.date.slice(0, 7) : ''));
+      if (cycle && cycle <= currentCycleStr && cycle < earliestCycle) {
+        earliestCycle = cycle;
+      }
+    });
+
+    allMonths.forEach((m) => {
+      if (m <= currentCycleStr && m < earliestCycle) {
+        earliestCycle = m;
+      }
+    });
+
+    const monthsList: string[] = [];
+    let curr = currentCycleStr;
+    while (curr >= earliestCycle || monthsList.length < 6) {
+      monthsList.push(curr);
+      curr = getNextBillingMonth(curr, -1);
+      if (monthsList.length >= 120) break; // Safety cutoff 10 years
+    }
+    targetMonths = monthsList;
   }
 
   // Reverse so trends are chronological (older -> newer) for bar/trend visualization
@@ -1234,8 +1378,11 @@ export const calculateHistoricalDashboard = (
 
   const trends: HistoricalTrendItem[] = chronologicalMonths.map((m) => {
     const monthTxs = transactions.filter((t) => {
-      if (cards && isFutureInstallmentHidden(t, cards)) return false;
       const txCycle = cards ? getTransactionBillingCycleMonth(t, cards) : t.billingCycleMonth;
+      // Strictly exclude any future transaction cycle
+      if (txCycle > currentCycleStr) return false;
+      // Exclude future installments if still hidden
+      if (cards && isFutureInstallmentHidden(t, cards, referenceDate)) return false;
       return txCycle === m;
     });
     let mSpent = 0;

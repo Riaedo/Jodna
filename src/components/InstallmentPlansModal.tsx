@@ -19,7 +19,9 @@ import {
   AlertCircle,
   Plus,
   ExternalLink,
+  Edit2,
 } from 'lucide-react';
+import { EditInstallmentModal } from './EditInstallmentModal';
 
 interface InstallmentPlansModalProps {
   isOpen: boolean;
@@ -29,6 +31,8 @@ interface InstallmentPlansModalProps {
   onSelectMonth: (month: string) => void;
   onTogglePaid: (txId: string) => void;
   onOpenNewTxModal?: () => void;
+  onUpdateInstallment?: (updatedTx: Transaction) => void;
+  onUpdateInstallments?: (updatedTxs: Transaction[]) => void;
 }
 
 export interface InstallmentPlanGroup {
@@ -56,8 +60,11 @@ export const InstallmentPlansModal: React.FC<InstallmentPlansModalProps> = ({
   onSelectMonth,
   onTogglePaid,
   onOpenNewTxModal,
+  onUpdateInstallment,
+  onUpdateInstallments,
 }) => {
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [editingInstallment, setEditingInstallment] = useState<Transaction | null>(null);
 
   if (!isOpen) return null;
 
@@ -382,6 +389,18 @@ export const InstallmentPlansModal: React.FC<InstallmentPlansModalProps> = ({
                             )}
                           </button>
 
+                          {/* Edit Installment Schedule Item Button */}
+                          {onUpdateInstallment && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingInstallment(item)}
+                              className="p-1 rounded-lg text-slate-400 hover:text-amber-300 hover:bg-amber-950/40 border border-transparent hover:border-amber-500/30 transition cursor-pointer"
+                              title={`แก้ไขรอบบิลงวดที่ ${instNum}`}
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
                           {/* Jump to Month Button */}
                           <button
                             type="button"
@@ -420,6 +439,24 @@ export const InstallmentPlansModal: React.FC<InstallmentPlansModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Edit Installment Schedule Modal */}
+      {editingInstallment && (
+        <EditInstallmentModal
+          isOpen={true}
+          onClose={() => setEditingInstallment(null)}
+          installment={editingInstallment}
+          allPlanItems={activePlan?.items || []}
+          cards={cards}
+          onSave={(shiftedItems) => {
+            if (onUpdateInstallments) {
+              onUpdateInstallments(shiftedItems);
+            } else if (onUpdateInstallment && shiftedItems.length > 0) {
+              onUpdateInstallment(shiftedItems[0]);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -74,9 +74,16 @@ export const YearOverYearTrendChart: React.FC<YearOverYearTrendChartProps> = ({
   const [spendTypeFilter, setSpendTypeFilter] = useState<'all' | 'regular' | 'installment'>('all');
   const [showTable, setShowTable] = useState(false);
 
-  // Filter out hidden future installments
+  // Filter out hidden future installments and any cycles in the future
   const visibleTxs = useMemo(() => {
-    return transactions.filter((t) => !isFutureInstallmentHidden(t, cards));
+    const now = new Date();
+    const currentCycleStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return transactions.filter((t) => {
+      const cycle = getTransactionBillingCycleMonth(t, cards);
+      if (cycle > currentCycleStr) return false;
+      if (isFutureInstallmentHidden(t, cards)) return false;
+      return true;
+    });
   }, [transactions, cards]);
 
   // Aggregate monthly spending by Year & Month

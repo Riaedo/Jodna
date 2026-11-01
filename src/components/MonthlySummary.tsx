@@ -307,108 +307,114 @@ export const MonthlySummary: React.FC<MonthlySummaryProps> = ({
               คำนวณจากวันตัดรอบบิลของแต่ละบัตร แล้วนำมารวมในรอบเดือน {formatThaiMonth(currentMonth)}
             </p>
 
-            {/* 2-column horizontal grid for cards so height balances with the pie chart */}
-            <div className={`grid gap-2.5 ${cardBillingDetails.length > 1 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'}`}>
-              {cardBillingDetails.map((detail, index) => {
-                const { card, totalSpent, totalPending, installmentAmount, isPaid, cyclePeriod } = detail;
-                const pct = stats.totalSpent > 0 ? Math.round((totalSpent / stats.totalSpent) * 100) : 0;
-                // If odd number of cards and this is the last one, span 2 columns on sm screens
-                const isOddLast = cardBillingDetails.length % 2 === 1 && index === cardBillingDetails.length - 1;
+            {/* 2-column horizontal grid for cards so height balances with the pie chart or empty state */}
+            {cardBillingDetails.length === 0 ? (
+              <div className="p-6 text-center rounded-xl bg-slate-800/30 border border-dashed border-slate-700/60 text-xs text-slate-400">
+                ยังไม่มีข้อมูลบัตรเครดิตสำหรับแสดงสัดส่วนรอบบิล
+              </div>
+            ) : (
+              <div className={`grid gap-2.5 ${cardBillingDetails.length > 1 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'}`}>
+                {cardBillingDetails.map((detail, index) => {
+                  const { card, totalSpent, totalPending, installmentAmount, isPaid, cyclePeriod } = detail;
+                  const pct = stats.totalSpent > 0 ? Math.round((totalSpent / stats.totalSpent) * 100) : 0;
+                  // If odd number of cards and this is the last one, span 2 columns on sm screens
+                  const isOddLast = cardBillingDetails.length % 2 === 1 && index === cardBillingDetails.length - 1;
 
-                return (
-                  <div
-                    key={card.id}
-                    className={`p-3 rounded-xl bg-slate-800/50 border border-slate-700/60 hover:border-slate-600 transition flex flex-col justify-between gap-2 ${
-                      isOddLast ? 'sm:col-span-2' : ''
-                    }`}
-                  >
-                    {/* Card Title & Amount */}
-                    <div className="flex items-start justify-between gap-1.5">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-semibold text-white text-xs truncate max-w-[140px]" title={card.name}>
-                            {card.name}
-                          </span>
-                          <span className="text-slate-400 text-[11px] shrink-0">(•••• {card.last4})</span>
-                        </div>
-                        <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5 flex-wrap">
-                          <span className="text-indigo-300 font-medium bg-indigo-500/10 px-1.5 py-0.2 rounded text-[10px]">
-                            {cyclePeriod.cutoffDayLabel}
-                          </span>
-                          <span className="text-slate-300 truncate">{cyclePeriod.periodLabel}</span>
-                        </div>
-                      </div>
-
-                      {/* Amount & Percentage */}
-                      <div className="text-right shrink-0">
-                        <div className="font-bold text-white text-xs sm:text-sm">
-                          {formatThaiCurrency(totalSpent)}
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          {pct}% ของยอดรวม
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Due Date & Installment info */}
-                    <div className="flex flex-wrap items-center justify-between text-[10px] pt-1 border-t border-slate-800/80 gap-1">
-                      <div className="text-slate-400 flex items-center gap-1 truncate">
-                        <span>ครบกำหนด:</span>
-                        <span className="text-amber-300 font-medium">{cyclePeriod.dueDateLabel}</span>
-                      </div>
-
-                      {/* Payment Status & Quick "จ่ายแล้ว" Action Button for this card */}
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {totalSpent === 0 ? (
-                          <span className="text-slate-500 text-[10px] italic">ไม่มีรายการ</span>
-                        ) : !isPaid && totalPending > 0 ? (
-                          <div className="flex items-center gap-1">
-                            <span className="text-rose-400 font-semibold text-[10px]">
-                              ค้าง {formatThaiCurrency(totalPending)}
+                  return (
+                    <div
+                      key={card.id}
+                      className={`p-3 rounded-xl bg-slate-800/50 border border-slate-700/60 hover:border-slate-600 transition flex flex-col justify-between gap-2 ${
+                        isOddLast ? 'sm:col-span-2' : ''
+                      }`}
+                    >
+                      {/* Card Title & Amount */}
+                      <div className="flex items-start justify-between gap-1.5">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold text-white text-xs truncate max-w-[140px]" title={card.name}>
+                              {card.name}
                             </span>
-                            {onMarkCardPaid && (
-                              <button
-                                type="button"
-                                onClick={() => onMarkCardPaid(card.id, currentMonth)}
-                                className="px-2 py-0.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium flex items-center gap-1 shadow-sm transition active:scale-95 cursor-pointer"
-                                title={`บันทึกว่าจ่ายยอดรอบนี้ของ ${card.name} แล้ว`}
-                              >
-                                <CheckCircle2 className="w-3 h-3 text-emerald-200" />
-                                <span>จ่ายแล้ว</span>
-                              </button>
-                            )}
+                            <span className="text-slate-400 text-[11px] shrink-0">(•••• {card.last4})</span>
                           </div>
-                        ) : (
-                          <div className="flex items-center gap-1">
-                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 text-[10px] font-semibold flex items-center gap-0.5 border border-emerald-500/30">
-                              <Check className="w-3 h-3 text-emerald-400" /> ชำระแล้ว
+                          <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5 flex-wrap">
+                            <span className="text-indigo-300 font-medium bg-indigo-500/10 px-1.5 py-0.2 rounded text-[10px]">
+                              {cyclePeriod.cutoffDayLabel}
                             </span>
-                            {onUnmarkCardPaid && (
-                              <button
-                                type="button"
-                                onClick={() => onUnmarkCardPaid(card.id, currentMonth)}
-                                className="text-[10px] text-slate-500 hover:text-rose-400 hover:underline cursor-pointer ml-0.5"
-                                title="ยกเลิกสถานะชำระแล้วของบัตรนี้"
-                              >
-                                ยกเลิก
-                              </button>
-                            )}
+                            <span className="text-slate-300 truncate">{cyclePeriod.periodLabel}</span>
                           </div>
-                        )}
+                        </div>
+
+                        {/* Amount & Percentage */}
+                        <div className="text-right shrink-0">
+                          <div className="font-bold text-white text-xs sm:text-sm">
+                            {formatThaiCurrency(totalSpent)}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {pct}% ของยอดรวม
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Due Date & Installment info */}
+                      <div className="flex flex-wrap items-center justify-between text-[10px] pt-1 border-t border-slate-800/80 gap-1">
+                        <div className="text-slate-400 flex items-center gap-1 truncate">
+                          <span>ครบกำหนด:</span>
+                          <span className="text-amber-300 font-medium">{cyclePeriod.dueDateLabel}</span>
+                        </div>
+
+                        {/* Payment Status & Quick "จ่ายแล้ว" Action Button for this card */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {totalSpent === 0 ? (
+                            <span className="text-slate-500 text-[10px] italic">ไม่มีรายการ</span>
+                          ) : !isPaid && totalPending > 0 ? (
+                            <div className="flex items-center gap-1">
+                              <span className="text-rose-400 font-semibold text-[10px]">
+                                ค้าง {formatThaiCurrency(totalPending)}
+                              </span>
+                              {onMarkCardPaid && (
+                                <button
+                                  type="button"
+                                  onClick={() => onMarkCardPaid(card.id, currentMonth)}
+                                  className="px-2 py-0.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium flex items-center gap-1 shadow-sm transition active:scale-95 cursor-pointer"
+                                  title={`บันทึกว่าจ่ายยอดรอบนี้ของ ${card.name} แล้ว`}
+                                >
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-200" />
+                                  <span>จ่ายแล้ว</span>
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 text-[10px] font-semibold flex items-center gap-0.5 border border-emerald-500/30">
+                                <Check className="w-3 h-3 text-emerald-400" /> ชำระแล้ว
+                              </span>
+                              {onUnmarkCardPaid && (
+                                <button
+                                  type="button"
+                                  onClick={() => onUnmarkCardPaid(card.id, currentMonth)}
+                                  className="text-[10px] text-slate-500 hover:text-rose-400 hover:underline cursor-pointer ml-0.5"
+                                  title="ยกเลิกสถานะชำระแล้วของบัตรนี้"
+                                >
+                                  ยกเลิก
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="w-full bg-slate-800 rounded-full h-1 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400"
+                          style={{ width: `${Math.min(100, pct)}%` }}
+                        />
                       </div>
                     </div>
-
-                    {/* Progress Bar */}
-                    <div className="w-full bg-slate-800 rounded-full h-1 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400"
-                        style={{ width: `${Math.min(100, pct)}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Bottom Summary Note */}

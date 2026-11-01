@@ -52,6 +52,7 @@ import {
   deleteUserCardFromFirestore,
   subscribeUserTransactions,
   saveUserTransactionToFirestore,
+  saveBatchTransactionsToFirestore,
   deleteUserTransactionFromFirestore,
   subscribeUserProfile,
   saveUserProfileToFirestore,
@@ -64,6 +65,8 @@ import {
   subscribeSyncQueue,
   resolveConflict,
   clearSyncQueue,
+  loadSyncQueue,
+  saveSyncQueue,
   SyncOperation,
   SyncStats,
 } from './services/syncQueue';
@@ -444,20 +447,80 @@ export default function App() {
           }
         };
 
-        // Task 2: Subscribe to Cards with Empty Array support
+        // Task 2: Subscribe to Cards with Empty Array support and offline queue preservation
         unsubCards = subscribeUserCards(currentUser.uid, (cloudCards) => {
           if (!isMounted) return;
-          // Set cards even if empty array! (Fixes Empty Array Sync Bug)
-          setCards(cloudCards);
+          const pendingOps = loadSyncQueue(currentUser.uid).filter(
+            (op) =>
+              (op.status === 'pending' || op.status === 'in_progress') &&
+              op.entityType === 'card'
+          );
+          if (pendingOps.length > 0) {
+            const pendingMap = new Map(pendingOps.map((o) => [o.documentId, o]));
+            const merged = cloudCards
+              .filter((c) => {
+                const op = pendingMap.get(c.id);
+                return !(op && op.operationType === 'delete');
+              })
+              .map((c) => {
+                const op = pendingMap.get(c.id);
+                if (op && (op.operationType === 'update' || op.operationType === 'create')) {
+                  return { ...c, ...op.payload };
+                }
+                return c;
+              });
+            pendingOps.forEach((op) => {
+              if (
+                op.operationType === 'create' &&
+                op.payload &&
+                !merged.some((m) => m.id === op.documentId)
+              ) {
+                merged.push(op.payload);
+              }
+            });
+            setCards(merged);
+          } else {
+            setCards(cloudCards);
+          }
           cardsReceived = true;
           checkAllReady();
         });
 
-        // Task 2: Subscribe to Transactions with Empty Array support
+        // Task 2: Subscribe to Transactions with Empty Array support and offline queue preservation
         unsubTxs = subscribeUserTransactions(currentUser.uid, (cloudTxs) => {
           if (!isMounted) return;
-          // Set transactions even if empty array! (Fixes Empty Array Sync Bug)
-          setTransactions(cloudTxs);
+          const pendingOps = loadSyncQueue(currentUser.uid).filter(
+            (op) =>
+              (op.status === 'pending' || op.status === 'in_progress') &&
+              op.entityType === 'transaction'
+          );
+          if (pendingOps.length > 0) {
+            const pendingMap = new Map(pendingOps.map((o) => [o.documentId, o]));
+            const merged = cloudTxs
+              .filter((tx) => {
+                const op = pendingMap.get(tx.id);
+                return !(op && op.operationType === 'delete');
+              })
+              .map((tx) => {
+                const op = pendingMap.get(tx.id);
+                if (op && (op.operationType === 'update' || op.operationType === 'create')) {
+                  return { ...tx, ...op.payload };
+                }
+                return tx;
+              });
+            pendingOps.forEach((op) => {
+              if (
+                op.operationType === 'create' &&
+                op.payload &&
+                !merged.some((m) => m.id === op.documentId)
+              ) {
+                merged.unshift(op.payload);
+              }
+            });
+            setTransactions(merged);
+          } else {
+            setTransactions(cloudTxs);
+          }
           txsReceived = true;
           checkAllReady();
         });
@@ -531,11 +594,11 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await logoutUser();
-      // Task 3: Reset state and LocalStorage for privacy and prevent cross-account bleeding
+      // Clean production reset: Reset state to empty arrays and clear storage to prevent demo data recurrence
       setCurrentUser(null);
       setIsCloudDataReady(false);
-      setCards(INITIAL_DEMO_CARDS);
-      setTransactions(INITIAL_DEMO_TRANSACTIONS);
+      setCards([]);
+      setTransactions([]);
       setBrandName('CardPulse');
       setBrandLogo(null);
       setBrandTagline('ระบบติดตามและจัดการค่าบัตรเครดิต');
@@ -544,8 +607,8 @@ export default function App() {
       setBgBlur(4);
       setBgPosition(null);
       setSelectedCardId(null);
-      localStorage.setItem(STORAGE_KEY_CARDS, JSON.stringify(INITIAL_DEMO_CARDS));
-      localStorage.setItem(STORAGE_KEY_TXS, JSON.stringify(INITIAL_DEMO_TRANSACTIONS));
+      localStorage.removeItem(STORAGE_KEY_CARDS);
+      localStorage.removeItem(STORAGE_KEY_TXS);
       showToast('ออกจากระบบเรียบร้อยแล้ว');
     } catch (err: any) {
       showToast(err.message || 'เกิดข้อผิดพลาดในการออกจากระบบ');
@@ -683,6 +746,13 @@ export default function App() {
 
     return Array.from(months).sort().reverse();
   }, [transactions, cards]);
+
+  // Past and current months for Historical Analytics Dashboard (Task 1: Strictly excludes future cycles)
+  const historicalPastMonths = useMemo(() => {
+    const now = new Date();
+    const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return availableMonths.filter((m) => m <= currentMonthStr);
+  }, [availableMonths]);
 
   // Compute due status for each card
   const dueStatuses: CardDueStatus[] = useMemo(() => {
@@ -991,6 +1061,97 @@ export default function App() {
     });
   };
 
+  // Task 2: Update individual installment schedule item
+  const handleUpdateInstallment = (updatedTx: Transaction) => {
+    setTransactions((prev) => {
+      const next = prev.map((t) => (t.id === updatedTx.id ? updatedTx : t));
+      syncOrQueueTransaction(updatedTx, 'update');
+      return next;
+    });
+    showToast(
+      `อัปเดตงวดที่ ${updatedTx.currentInstallment || 1} เป็นรอบ ${formatThaiMonth(
+        updatedTx.billingCycleMonth
+      )} เรียบร้อยแล้ว`
+    );
+  };
+
+  // Task 2 & 3: Update multiple installment schedule items in the same plan with cascading shift
+  const handleUpdateInstallments = async (updatedTxs: Transaction[]) => {
+    if (updatedTxs.length === 0) return;
+
+    // 1. Update React state immediately
+    const updatedMap = new Map(updatedTxs.map((tx) => [tx.id, tx]));
+    setTransactions((prev) => prev.map((t) => updatedMap.get(t.id) || t));
+
+    // 2. Synchronize to Firestore or Offline Queue
+    if (currentUser) {
+      if (isOnline && isCloudDataReady) {
+        try {
+          await saveBatchTransactionsToFirestore(currentUser.uid, updatedTxs);
+        } catch (err: any) {
+          if (err?.code === 'DATA_CONFLICT') {
+            console.warn('Batch firestore save encountered OCC DATA_CONFLICT:', err);
+            updatedTxs.forEach((tx) => {
+              enqueueOperation(currentUser.uid, {
+                entityType: 'transaction',
+                documentId: tx.id,
+                operationType: 'update',
+                payload: tx,
+                baseVersion: tx.version || 1,
+              });
+            });
+            const queue = loadSyncQueue(currentUser.uid);
+            const targetOp = queue.find(
+              (q) => q.documentId === (err.conflictingTxId || updatedTxs[0].id)
+            );
+            if (targetOp) {
+              targetOp.status = 'conflict';
+              targetOp.conflictServerData = err.serverData;
+              targetOp.lastError = err.message;
+              saveSyncQueue(currentUser.uid, queue);
+            }
+            setIsConflictModalOpen(true);
+            showToast('ตรวจพบข้อมูลแผนผ่อนชำระขัดแย้งกับคลาวด์ โปรดตรวจสอบ');
+            return;
+          }
+
+          console.warn('Batch firestore save failed, enqueuing to offline sync queue:', err);
+          updatedTxs.forEach((tx) => {
+            enqueueOperation(currentUser.uid, {
+              entityType: 'transaction',
+              documentId: tx.id,
+              operationType: 'update',
+              payload: tx,
+              baseVersion: tx.version || 1,
+            });
+          });
+          showToast('บันทึกในเครื่องแล้ว และเพิ่มลงคิวรอซิงก์');
+          return;
+        }
+      } else {
+        // Offline
+        updatedTxs.forEach((tx) => {
+          enqueueOperation(currentUser.uid, {
+            entityType: 'transaction',
+            documentId: tx.id,
+            operationType: 'update',
+            payload: tx,
+            baseVersion: tx.version || 1,
+          });
+        });
+      }
+    }
+
+    const firstItem = updatedTxs[0];
+    showToast(
+      updatedTxs.length > 1
+        ? `อัปเดตและปรับรอบบิลผ่อนชำระต่อเนื่อง ${updatedTxs.length} งวดเรียบร้อยแล้ว`
+        : `อัปเดตงวดที่ ${firstItem.currentInstallment || 1} เป็นรอบ ${formatThaiMonth(
+            firstItem.billingCycleMonth
+          )} เรียบร้อยแล้ว`
+    );
+  };
+
   // Add / Edit Card (Conforming to Phase 3 Tasks 1, 2, 3)
   const handleSaveCard = (cardData: Omit<CreditCard, 'id'> & { id?: string }) => {
     let updatedCards: CreditCard[];
@@ -1297,7 +1458,7 @@ export default function App() {
           <HistoricalDashboard
             transactions={transactions}
             cards={cards}
-            allMonths={availableMonths}
+            allMonths={historicalPastMonths}
             onSelectMonthToInspect={(m) => {
               setCurrentMonth(m);
               setActiveTab('tracker');
@@ -1447,6 +1608,8 @@ export default function App() {
           setEditingTx(null);
           setIsNewTxModalOpen(true);
         }}
+        onUpdateInstallment={handleUpdateInstallment}
+        onUpdateInstallments={handleUpdateInstallments}
       />
 
       <ConfirmModal
