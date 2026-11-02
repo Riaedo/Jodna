@@ -8,6 +8,8 @@ import {
   onAuthStateChanged,
   User,
   signOut,
+  setPersistence,
+  browserLocalPersistence,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -30,13 +32,23 @@ import { CreditCard, Transaction } from '../types';
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
+// Explicitly configure browserLocalPersistence to survive iOS Safari & Android mobile browser reloads
+if (typeof window !== 'undefined') {
+  setPersistence(auth, browserLocalPersistence).catch((err) => {
+    console.warn('Set persistence warning:', err);
+  });
+}
+
 // Initialize Firestore using custom databaseId if configured, or default
 export const db = firebaseConfig.firestoreDatabaseId
   ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
   : getFirestore(app);
 
-// Google Auth Provider for popup login
+// Google Auth Provider with account selection prompt
 const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({
+  prompt: 'select_account',
+});
 
 // 2. Validate Connection to Firestore on startup (Mandatory per Skill guidelines)
 export async function testConnection() {
@@ -103,7 +115,7 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-// 4. Browser Environment Detection (Task 4)
+// 4. Browser Environment Detection & Mobile Diagnostic Logging
 export interface BrowserEnv {
   isMobile: boolean;
   isInAppBrowser: boolean;
@@ -111,6 +123,128 @@ export interface BrowserEnv {
   isIOS: boolean;
   isAndroid: boolean;
 }
+
+export type AuthDiagnosticMilestone =
+  | 'Login Started'
+  | 'Redirect Initiated'
+  | 'Redirect Returned'
+  | 'Redirect Result Received'
+  | 'Auth State Changed'
+  | 'User UID Confirmed'
+  | 'Firestore User Data Loaded'
+  | 'Auth Error Code';
+
+export interface AuthDiagnosticEvent {
+  timestamp: string;
+  milestone: AuthDiagnosticMilestone;
+  details?: Record<string, any>;
+}
+
+const REDIRECT_PENDING_KEY = 'cardpulse_auth_redirect_pending';
+const REDIRECT_TIME_KEY = 'cardpulse_auth_redirect_time';
+const DIAGNOSTICS_STORAGE_KEY = 'cardpulse_auth_diagnostics';
+
+// Diagnostic Logger: Logs sanitized milestones without any token or secret
+export const logAuthDiagnostic = (
+  milestone: AuthDiagnosticMilestone,
+  details?: Record<string, any>
+) => {
+  const timestamp = new Date().toISOString();
+  // Strictly filter out any credentials, tokens, or private secrets
+  const safeDetails: Record<string, any> = {};
+  if (details && typeof details === 'object') {
+    Object.keys(details).forEach((key) => {
+      const lower = key.toLowerCase();
+      if (
+        lower.includes('token') ||
+        lower.includes('secret') ||
+        lower.includes('credential') ||
+        lower.includes('password')
+      ) {
+        safeDetails[key] = '[REDACTED]';
+      } else {
+        safeDetails[key] = details[key];
+      }
+    });
+  }
+
+  console.log(`[Auth Diagnostic] [${timestamp}] ${milestone}`, safeDetails);
+
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = sessionStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
+      const list: AuthDiagnosticEvent[] = raw ? JSON.parse(raw) : [];
+      list.push({ timestamp, milestone, details: safeDetails });
+      sessionStorage.setItem(DIAGNOSTICS_STORAGE_KEY, JSON.stringify(list.slice(-30)));
+    } catch {
+      // ignore storage limitations
+    }
+  }
+};
+
+export const getAuthDiagnostics = (): AuthDiagnosticEvent[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+
+if (typeof window !== 'undefined') {
+  (window as any).__cardpulse_get_auth_diagnostics = getAuthDiagnostics;
+}
+
+// Dual-Storage Redirect State Helpers (survives iOS Safari / WebKit cross-site navigation)
+export const isRedirectLoginPending = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const pendingSession = sessionStorage.getItem(REDIRECT_PENDING_KEY) === 'true';
+    const pendingLocal = localStorage.getItem(REDIRECT_PENDING_KEY) === 'true';
+    const timeStr = localStorage.getItem(REDIRECT_TIME_KEY) || sessionStorage.getItem(REDIRECT_TIME_KEY);
+
+    if (pendingSession || pendingLocal) {
+      if (timeStr) {
+        const elapsed = Date.now() - parseInt(timeStr, 10);
+        // Expire after 10 minutes to prevent stale stuck states
+        if (elapsed > 10 * 60 * 1000) {
+          clearRedirectLoginFlag();
+          return false;
+        }
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+export const setRedirectLoginFlag = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    const now = Date.now().toString();
+    sessionStorage.setItem(REDIRECT_PENDING_KEY, 'true');
+    sessionStorage.setItem(REDIRECT_TIME_KEY, now);
+    localStorage.setItem(REDIRECT_PENDING_KEY, 'true');
+    localStorage.setItem(REDIRECT_TIME_KEY, now);
+  } catch (e) {
+    console.warn('Failed to set redirect flag in storage:', e);
+  }
+};
+
+export const clearRedirectLoginFlag = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+    sessionStorage.removeItem(REDIRECT_TIME_KEY);
+    localStorage.removeItem(REDIRECT_PENDING_KEY);
+    localStorage.removeItem(REDIRECT_TIME_KEY);
+  } catch (e) {
+    console.warn('Failed to clear redirect flag from storage:', e);
+  }
+};
 
 export const detectBrowserEnv = (): BrowserEnv => {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
@@ -136,17 +270,21 @@ export const detectBrowserEnv = (): BrowserEnv => {
   } else if (/MicroMessenger/i.test(ua)) {
     isInAppBrowser = true;
     inAppBrowserName = 'WeChat';
-  } else if (/Twitter/i.test(ua)) {
+  } else if (/Twitter|TwitterAndroid|TwitterforiPhone/i.test(ua)) {
     isInAppBrowser = true;
     inAppBrowserName = 'Twitter/X';
+  } else if (/TikTok/i.test(ua)) {
+    isInAppBrowser = true;
+    inAppBrowserName = 'TikTok';
   }
 
   return { isMobile, isInAppBrowser, inAppBrowserName, isIOS, isAndroid };
 };
 
-// Error Message Mapping (Task 2)
+// Error Message Mapping with dynamic domain resolution
 export const getAuthErrorMessage = (error: any): string => {
   const code = error?.code || '';
+  const currentDomain = typeof window !== 'undefined' ? window.location.hostname : '';
   switch (code) {
     case 'auth/popup-blocked':
       return 'เบราว์เซอร์บล็อกหน้าต่าง Pop-up กำลังเปลี่ยนไปใช้การเข้าสู่ระบบแบบเต็มหน้าจอ...';
@@ -154,7 +292,7 @@ export const getAuthErrorMessage = (error: any): string => {
     case 'auth/cancelled-popup-request':
       return 'ยกเลิกการเข้าสู่ระบบแล้ว';
     case 'auth/unauthorized-domain':
-      return 'โดเมนนี้ยังไม่ได้รับอนุญาตใน Firebase Console โปรดไปที่ Firebase Console > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมนของแอปนี้';
+      return `โดเมน "${currentDomain || 'ปัจจุบัน'}" ยังไม่ได้รับอนุญาตใน Firebase Console โปรดไปที่ Firebase Console > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมน "${currentDomain}"`;
     case 'auth/operation-not-allowed':
       return 'ระบบ Google Sign-in ยังไม่เปิดใช้งานใน Firebase Console โปรดเปิดใช้งาน Google Provider ในเมนู Authentication Settings';
     case 'auth/network-request-failed':
@@ -168,9 +306,18 @@ export const getAuthErrorMessage = (error: any): string => {
   }
 };
 
-// Primary Login Function (Desktop: Popup, Mobile/Fallback: Redirect) (Task 1)
+// Primary Login Function (Desktop: Popup, Mobile/Fallback: Redirect)
 export const loginWithGoogle = async (): Promise<{ user: User | null; redirectInitiated?: boolean }> => {
   const env = detectBrowserEnv();
+
+  logAuthDiagnostic('Login Started', {
+    platform: env.isIOS ? 'iOS' : env.isAndroid ? 'Android' : 'Desktop',
+    isMobile: env.isMobile,
+    isInAppBrowser: env.isInAppBrowser,
+    inAppBrowserName: env.inAppBrowserName,
+    flow: env.isMobile ? 'Redirect' : 'Popup',
+    currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
+  });
 
   // If in-app browser is detected, throw actionable error for user
   if (env.isInAppBrowser) {
@@ -178,17 +325,31 @@ export const loginWithGoogle = async (): Promise<{ user: User | null; redirectIn
       `ตรวจพบการใช้งานผ่าน ${env.inAppBrowserName || 'In-app'} Browser ซึ่ง Google ไม่อนุญาตให้ล็อกอินเพื่อความปลอดภัย โปรดเปิดด้วย Safari หรือ Chrome`
     );
     (err as any).code = 'auth/disallowed_useragent';
+    logAuthDiagnostic('Auth Error Code', {
+      code: 'auth/disallowed_useragent',
+      message: err.message,
+    });
     throw err;
   }
 
-  // Mobile browsers (iOS Safari, Android Chrome): Prefer signInWithRedirect for reliable mobile experience
+  // Mobile browsers (iOS Safari, Android Chrome): Always use signInWithRedirect
   if (env.isMobile) {
     try {
-      sessionStorage.setItem('cardpulse_auth_redirect_pending', 'true');
+      setRedirectLoginFlag();
+      logAuthDiagnostic('Redirect Initiated', {
+        provider: 'google.com',
+        currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
+        currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
+        browserEnv: env,
+      });
       await signInWithRedirect(auth, googleProvider);
       return { user: null, redirectInitiated: true };
     } catch (redirectErr: any) {
-      sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+      clearRedirectLoginFlag();
+      logAuthDiagnostic('Auth Error Code', {
+        code: redirectErr?.code,
+        message: redirectErr?.message,
+      });
       throw new Error(getAuthErrorMessage(redirectErr));
     }
   }
@@ -196,53 +357,144 @@ export const loginWithGoogle = async (): Promise<{ user: User | null; redirectIn
   // Desktop browsers: Prefer signInWithPopup, with fallback to Redirect if popup is blocked
   try {
     const result = await signInWithPopup(auth, googleProvider);
+    if (result && result.user) {
+      logAuthDiagnostic('User UID Confirmed', {
+        uid: result.user.uid,
+        email: result.user.email,
+        flow: 'Popup',
+      });
+    }
     return { user: result.user };
   } catch (error: any) {
     if (
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request'
     ) {
+      logAuthDiagnostic('Auth Error Code', {
+        code: error.code,
+        message: 'Popup cancelled or closed by user',
+      });
       return { user: null };
     }
 
     // Popup was blocked on Desktop -> Automatic Fallback to signInWithRedirect
     if (error?.code === 'auth/popup-blocked') {
+      logAuthDiagnostic('Auth Error Code', {
+        code: 'auth/popup-blocked',
+        fallback: 'signInWithRedirect',
+      });
       try {
-        sessionStorage.setItem('cardpulse_auth_redirect_pending', 'true');
+        setRedirectLoginFlag();
+        logAuthDiagnostic('Redirect Initiated', {
+          provider: 'google.com',
+          reason: 'popup-blocked-fallback',
+        });
         await signInWithRedirect(auth, googleProvider);
         return { user: null, redirectInitiated: true };
       } catch (redirectErr: any) {
-        sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+        clearRedirectLoginFlag();
+        logAuthDiagnostic('Auth Error Code', {
+          code: redirectErr?.code,
+          message: redirectErr?.message,
+        });
         throw new Error(getAuthErrorMessage(redirectErr));
       }
     }
 
+    logAuthDiagnostic('Auth Error Code', {
+      code: error?.code,
+      message: error?.message,
+    });
     console.error('Login error:', error);
     throw new Error(getAuthErrorMessage(error));
   }
 };
 
-// Check for redirect result on app startup (Task 1)
+// Check for redirect result on app startup with race safety and timeout safeguard
 export const checkRedirectLoginResult = async (): Promise<User | null> => {
+  const pending = isRedirectLoginPending();
+  if (pending) {
+    logAuthDiagnostic('Redirect Returned', {
+      pending: true,
+      currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
+      currentHref: typeof window !== 'undefined' ? window.location.href : '',
+    });
+  }
+
   try {
-    const pending = sessionStorage.getItem('cardpulse_auth_redirect_pending');
-    const result = await getRedirectResult(auth);
-    if (pending) {
-      sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+    // If auth.currentUser is already populated on mount, return immediately
+    if (auth.currentUser) {
+      clearRedirectLoginFlag();
+      logAuthDiagnostic('Redirect Result Received', {
+        resolvedVia: 'auth.currentUser',
+        uid: auth.currentUser.uid,
+        email: auth.currentUser.email,
+      });
+      return auth.currentUser;
     }
+
+    // Wrap getRedirectResult with an 8-second safety timeout so UI never hangs permanently
+    const redirectPromise = getRedirectResult(auth);
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), 8000)
+    );
+
+    const result = await Promise.race([redirectPromise, timeoutPromise]);
+
     if (result && result.user) {
+      clearRedirectLoginFlag();
+      logAuthDiagnostic('Redirect Result Received', {
+        resolvedVia: 'getRedirectResult',
+        uid: result.user.uid,
+        email: result.user.email,
+      });
+      logAuthDiagnostic('User UID Confirmed', {
+        uid: result.user.uid,
+        email: result.user.email,
+        flow: 'Redirect',
+      });
       return result.user;
     }
+
+    // If getRedirectResult returned null, check auth.currentUser once more
+    if (pending) {
+      clearRedirectLoginFlag();
+      const lateUser = auth.currentUser as User | null;
+      if (lateUser) {
+        logAuthDiagnostic('Redirect Result Received', {
+          resolvedVia: 'auth.currentUserAfterRace',
+          uid: lateUser.uid,
+          email: lateUser.email,
+        });
+        return lateUser;
+      }
+      logAuthDiagnostic('Redirect Result Received', {
+        hasUser: false,
+        pendingWasSet: true,
+      });
+    }
+
     return null;
   } catch (error: any) {
-    sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+    clearRedirectLoginFlag();
+    logAuthDiagnostic('Auth Error Code', {
+      source: 'getRedirectResult',
+      code: error?.code,
+      message: error?.message,
+    });
+    logAuthDiagnostic('Redirect Result Received', {
+      error: true,
+      code: error?.code,
+      message: error?.message,
+    });
     console.error('Redirect result error:', error);
     throw new Error(getAuthErrorMessage(error));
   }
 };
 
 export const logoutUser = async (): Promise<void> => {
-  sessionStorage.removeItem('cardpulse_auth_redirect_pending');
+  clearRedirectLoginFlag();
+  logAuthDiagnostic('Auth State Changed', { action: 'logout' });
   await signOut(auth);
 };
 

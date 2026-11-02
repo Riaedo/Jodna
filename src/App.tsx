@@ -38,7 +38,7 @@ import { BackgroundModal, BackgroundPosition } from './components/BackgroundModa
 import { ExportCsvModal } from './components/ExportCsvModal';
 import { BrandCustomizationModal } from './components/BrandCustomizationModal';
 import { ConflictModal } from './components/ConflictModal';
-import { CreditCard as CardIcon, BarChart3, ExternalLink, Copy, Check } from 'lucide-react';
+import { CreditCard as CardIcon, BarChart3, ExternalLink, Copy, Check, Loader2 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
   subscribeAuth,
@@ -46,6 +46,9 @@ import {
   logoutUser,
   checkRedirectLoginResult,
   detectBrowserEnv,
+  isRedirectLoginPending,
+  logAuthDiagnostic,
+  clearRedirectLoginFlag,
   subscribeUserCards,
   saveUserCardToFirestore,
   saveCardOrderToFirestore,
@@ -205,7 +208,7 @@ export default function App() {
   // Firebase Auth and Cloud Sync state
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(() => isRedirectLoginPending());
   const [inAppNotice, setInAppNotice] = useState<{ isOpen: boolean; appName?: string } | null>(null);
   const [isCloudDataReady, setIsCloudDataReady] = useState<boolean>(false);
 
@@ -277,26 +280,61 @@ export default function App() {
     []
   );
 
-  // Subscribe to Firebase Auth changes
+  // 1. Subscribe to Firebase Auth changes
   useEffect(() => {
     const unsubscribe = subscribeAuth((user) => {
+      logAuthDiagnostic('Auth State Changed', {
+        hasUser: !!user,
+        uid: user?.uid,
+        email: user?.email,
+      });
       setCurrentUser(user);
+      if (user) {
+        logAuthDiagnostic('User UID Confirmed', {
+          uid: user.uid,
+          email: user.email,
+        });
+        clearRedirectLoginFlag();
+        setIsAuthLoading(false);
+      }
     });
     return () => unsubscribe();
   }, []);
 
-  // Check for Google OAuth Redirect Result on mount (Task 1)
+  // 2. Check for Google OAuth Redirect Result on mount
   useEffect(() => {
     let isMounted = true;
+    const isPending = isRedirectLoginPending();
+
+    if (isPending) {
+      setIsAuthLoading(true);
+    }
+
     const checkRedirect = async () => {
       try {
         const user = await checkRedirectLoginResult();
         if (user && isMounted) {
+          setCurrentUser(user);
           showToast(`เข้าสู่ระบบด้วย Google สำเร็จในชื่อ ${user.displayName || user.email}`);
         }
       } catch (err: any) {
         if (isMounted) {
-          showToast(err.message || 'เกิดข้อผิดพลาดในการรับผลการเข้าสู่ระบบ');
+          const errMsg = err?.message || 'เกิดข้อผิดพลาดในการรับผลการเข้าสู่ระบบ';
+          showToast(errMsg);
+          if (errMsg.includes('Authorized domains') || errMsg.includes('auth/unauthorized-domain')) {
+            setConfirmDialog({
+              isOpen: true,
+              title: 'จำเป็นต้องตั้งค่า Authorized Domain ใน Firebase Console',
+              message: errMsg,
+              detail: 'โปรดไปที่ Firebase Console > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมนของแอปเพื่อเปิดใช้งาน Google Sign-in',
+              confirmLabel: 'เข้าใจแล้ว',
+              onConfirm: () => setConfirmDialog((prev) => ({ ...prev, isOpen: false })),
+            });
+          }
+        }
+      } finally {
+        if (isMounted) {
+          setIsAuthLoading(false);
         }
       }
     };
@@ -439,17 +477,29 @@ export default function App() {
         let cardsReceived = false;
         let txsReceived = false;
         let profileReceived = false;
+        let latestCardsCount = 0;
+        let latestTxsCount = 0;
+        let loggedDataLoaded = false;
 
         const checkAllReady = () => {
           if (cardsReceived && txsReceived && profileReceived && isMounted) {
             setIsCloudDataReady(true);
             setIsSyncing(false);
+            if (!loggedDataLoaded) {
+              loggedDataLoaded = true;
+              logAuthDiagnostic('Firestore User Data Loaded', {
+                uid: currentUser.uid,
+                cardCount: latestCardsCount,
+                txCount: latestTxsCount,
+              });
+            }
           }
         };
 
         // Task 2: Subscribe to Cards with Empty Array support and offline queue preservation
         unsubCards = subscribeUserCards(currentUser.uid, (cloudCards) => {
           if (!isMounted) return;
+          latestCardsCount = cloudCards.length;
           const pendingOps = loadSyncQueue(currentUser.uid).filter(
             (op) =>
               (op.status === 'pending' || op.status === 'in_progress') &&
@@ -489,6 +539,7 @@ export default function App() {
         // Task 2: Subscribe to Transactions with Empty Array support and offline queue preservation
         unsubTxs = subscribeUserTransactions(currentUser.uid, (cloudTxs) => {
           if (!isMounted) return;
+          latestTxsCount = cloudTxs.length;
           const pendingOps = loadSyncQueue(currentUser.uid).filter(
             (op) =>
               (op.status === 'pending' || op.status === 'in_progress') &&
@@ -1384,6 +1435,17 @@ export default function App() {
           >
             ✕
           </button>
+        </aside>
+      )}
+
+      {/* Mobile & Redirect Return Auth Processing Sticky Banner */}
+      {isAuthLoading && (
+        <aside
+          aria-live="polite"
+          className="bg-indigo-600/95 text-white text-xs font-semibold py-2.5 px-4 text-center flex items-center justify-center gap-2 sticky top-0 z-50 shadow-lg backdrop-blur border-b border-indigo-400/30"
+        >
+          <Loader2 className="w-4 h-4 animate-spin text-white shrink-0" />
+          <span>กำลังตรวจสอบสถานะการเข้าสู่ระบบกับ Google กรุณารอสักครู่...</span>
         </aside>
       )}
 
