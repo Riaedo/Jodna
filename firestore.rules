@@ -7,6 +7,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // 2. Health check connection rule (requires sign-in to avoid open read)
+    match /test/connection {
+      allow read: if isSignedIn();
+    }
+
     // Helper functions
     function isSignedIn() {
       return request.auth != null;

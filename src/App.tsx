@@ -38,6 +38,7 @@ import { BackgroundModal, BackgroundPosition } from './components/BackgroundModa
 import { ExportCsvModal } from './components/ExportCsvModal';
 import { BrandCustomizationModal } from './components/BrandCustomizationModal';
 import { ConflictModal } from './components/ConflictModal';
+import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { CreditCard as CardIcon, BarChart3, ExternalLink, Copy, Check, Loader2 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -61,6 +62,9 @@ import {
   saveUserProfileToFirestore,
   checkAndMigrateUserData,
   cleanStartUserCloudData,
+  firebaseAppConfig,
+  getSystemDiagnosticSummary,
+  maskEmail,
 } from './services/firebase';
 import {
   enqueueOperation,
@@ -172,6 +176,7 @@ export default function App() {
   const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isBrandModalOpen, setIsBrandModalOpen] = useState(false);
+  const [isDiagnosticsModalOpen, setIsDiagnosticsModalOpen] = useState(false);
 
   // Confirmation Modal state
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -286,16 +291,36 @@ export default function App() {
       logAuthDiagnostic('Auth State Changed', {
         hasUser: !!user,
         uid: user?.uid,
-        email: user?.email,
+        email: maskEmail(user?.email),
       });
       setCurrentUser(user);
       if (user) {
         logAuthDiagnostic('User UID Confirmed', {
           uid: user.uid,
-          email: user.email,
+          email: maskEmail(user.email),
         });
+        console.log('[CardPulse System Diagnostics]', getSystemDiagnosticSummary(user));
         clearRedirectLoginFlag();
         setIsAuthLoading(false);
+
+        // Pre-populate cards from local storage scoped key if state is currently empty
+        try {
+          const scopedKey = `${STORAGE_KEY_CARDS}_${user.uid}`;
+          const cached = localStorage.getItem(scopedKey);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setCards((prev) => (prev.length === 0 ? parsed : prev));
+            }
+          }
+          const cachedTxs = localStorage.getItem(`${STORAGE_KEY_TXS}_${user.uid}`);
+          if (cachedTxs) {
+            const parsedTxs = JSON.parse(cachedTxs);
+            if (Array.isArray(parsedTxs) && parsedTxs.length > 0) {
+              setTransactions((prev) => (prev.length === 0 ? parsedTxs : prev));
+            }
+          }
+        } catch {}
       }
     });
     return () => unsubscribe();
@@ -459,19 +484,23 @@ export default function App() {
     const setupSync = async () => {
       try {
         // Task 1: Check and perform Initial Migration BEFORE starting real-time sync
-        const isReal = checkIfRealUserData(cards, transactions);
-        const migrationResult = await checkAndMigrateUserData(
-          currentUser.uid,
-          cards,
-          transactions,
-          { brandName, brandLogo, brandTagline, bgImage, bgOpacity, bgBlur, bgPosition },
-          isReal
-        );
+        try {
+          const isReal = checkIfRealUserData(cards, transactions);
+          const migrationResult = await checkAndMigrateUserData(
+            currentUser.uid,
+            cards,
+            transactions,
+            { brandName, brandLogo, brandTagline, bgImage, bgOpacity, bgBlur, bgPosition },
+            isReal
+          );
 
-        if (!isMounted) return;
+          if (!isMounted) return;
 
-        if (migrationResult.status === 'migrated_real_data') {
-          showToast(`นำเข้าข้อมูลจากเครื่องของคุณขึ้นสู่คลาวด์เรียบร้อยแล้ว (${migrationResult.cloudCardCount} บัตร)`);
+          if (migrationResult.status === 'migrated_real_data') {
+            showToast(`นำเข้าข้อมูลจากเครื่องของคุณขึ้นสู่คลาวด์เรียบร้อยแล้ว (${migrationResult.cloudCardCount} บัตร)`);
+          }
+        } catch (migErr) {
+          console.warn('[CardPulse Sync] Non-fatal initial migration check notice:', migErr);
         }
 
         let cardsReceived = false;
@@ -613,6 +642,7 @@ export default function App() {
   // Auth Handlers (Phase 2 Enhanced)
   const handleLogin = async () => {
     if (isAuthLoading) return;
+    let redirectStarted = false;
     try {
       setIsAuthLoading(true);
       const env = detectBrowserEnv();
@@ -626,6 +656,7 @@ export default function App() {
 
       const res = await loginWithGoogle();
       if (res.redirectInitiated) {
+        redirectStarted = true;
         showToast('กำลังนำคุณไปยังหน้าเข้าสู่ระบบของ Google...');
         return;
       }
@@ -638,7 +669,9 @@ export default function App() {
       }
       showToast(err.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
     } finally {
-      setIsAuthLoading(false);
+      if (!redirectStarted) {
+        setIsAuthLoading(false);
+      }
     }
   };
 
@@ -1480,6 +1513,7 @@ export default function App() {
         conflictCount={syncStats.conflictCount}
         onTriggerSync={handleTriggerSync}
         onOpenConflictModal={() => setIsConflictModalOpen(true)}
+        onOpenDiagnosticsModal={() => setIsDiagnosticsModalOpen(true)}
         onCleanStart={handleCleanStart}
       />
 
@@ -1541,22 +1575,30 @@ export default function App() {
 
             {/* 2. Visual Credit Cards Section */}
             <section aria-label="Credit Cards Overview">
-              <CardSlider
-                cards={cards}
-                dueStatuses={dueStatuses}
-                selectedCardId={selectedCardId}
-                onSelectCard={(id) => setSelectedCardId(id)}
-                onOpenAddCard={() => {
-                  setEditingCard(null);
-                  setIsCardModalOpen(true);
-                }}
-                onOpenEditCard={(card) => {
-                  setEditingCard(card);
-                  setIsCardModalOpen(true);
-                }}
-                onDeleteCard={handleDeleteCard}
-                onReorderCards={handleReorderCards}
-              />
+              {currentUser && !isCloudDataReady && cards.length === 0 ? (
+                <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-8 sm:p-12 text-center flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
+                  <p className="text-sm font-semibold text-white">กำลังโหลดข้อมูลบัตรเครดิตของคุณจากคลาวด์...</p>
+                  <p className="text-xs text-slate-400">กำลังเชื่อมต่อฐานข้อมูล Firestore ({firebaseAppConfig.projectId})</p>
+                </div>
+              ) : (
+                <CardSlider
+                  cards={cards}
+                  dueStatuses={dueStatuses}
+                  selectedCardId={selectedCardId}
+                  onSelectCard={(id) => setSelectedCardId(id)}
+                  onOpenAddCard={() => {
+                    setEditingCard(null);
+                    setIsCardModalOpen(true);
+                  }}
+                  onOpenEditCard={(card) => {
+                    setEditingCard(card);
+                    setIsCardModalOpen(true);
+                  }}
+                  onDeleteCard={handleDeleteCard}
+                  onReorderCards={handleReorderCards}
+                />
+              )}
             </section>
 
             {/* 3. Monthly Cycle Summary & Analytics */}
@@ -1757,6 +1799,18 @@ export default function App() {
         onClose={() => setIsConflictModalOpen(false)}
         conflicts={conflicts}
         onResolve={handleResolveConflict}
+      />
+
+      {/* Cloud & System Diagnostics Modal */}
+      <DiagnosticsModal
+        isOpen={isDiagnosticsModalOpen}
+        onClose={() => setIsDiagnosticsModalOpen(false)}
+        currentUser={currentUser}
+        cardsCount={cards.length}
+        txsCount={transactions.length}
+        isCloudDataReady={isCloudDataReady}
+        isSyncing={isSyncing}
+        isOnline={isOnline}
       />
       </div>
     </div>

@@ -28,8 +28,27 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 import { CreditCard, Transaction } from '../types';
 
+// Resolve configuration: Merge import.meta.env (Vercel / Production env vars) with fallback to firebase-applet-config.json
+const rawConfig = (typeof firebaseConfig !== 'undefined' ? firebaseConfig : {}) as Record<string, any>;
+
+export const firebaseAppConfig = {
+  projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || rawConfig.projectId || 'gen-lang-client-0967357802',
+  appId: import.meta.env?.VITE_FIREBASE_APP_ID || rawConfig.appId || '1:881575334440:web:67cdc6d318f546a5f15b1d',
+  apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || rawConfig.apiKey || 'AIzaSyAONglDA2Jss3-PCn4NKXeFFwg9XA8w6z8',
+  authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || rawConfig.authDomain || 'gen-lang-client-0967357802.firebaseapp.com',
+  firestoreDatabaseId:
+    import.meta.env?.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+    import.meta.env?.VITE_FIRESTORE_DATABASE_ID ||
+    rawConfig.firestoreDatabaseId ||
+    'ai-studio-creditcardrecord-d130ca53-bac9-4d31-b18a-c5ec1ec9582c',
+  storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || rawConfig.storageBucket || 'gen-lang-client-0967357802.firebasestorage.app',
+  messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || rawConfig.messagingSenderId || '881575334440',
+  measurementId: import.meta.env?.VITE_FIREBASE_MEASUREMENT_ID || rawConfig.measurementId || '',
+  oAuthClientId: import.meta.env?.VITE_FIREBASE_OAUTH_CLIENT_ID || rawConfig.oAuthClientId || '881575334440-qhocurg4d54pla931n5gcccqv8a7b9bv.apps.googleusercontent.com',
+};
+
 // 1. Initialize Firebase App and Services
-export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseAppConfig);
 export const auth = getAuth(app);
 
 // Explicitly configure browserLocalPersistence to survive iOS Safari & Android mobile browser reloads
@@ -40,8 +59,8 @@ if (typeof window !== 'undefined') {
 }
 
 // Initialize Firestore using custom databaseId if configured, or default
-export const db = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+export const db = firebaseAppConfig.firestoreDatabaseId
+  ? getFirestore(app, firebaseAppConfig.firestoreDatabaseId)
   : getFirestore(app);
 
 // Google Auth Provider with account selection prompt
@@ -49,18 +68,33 @@ const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account',
 });
+googleProvider.addScope('email');
+googleProvider.addScope('profile');
 
-// 2. Validate Connection to Firestore on startup (Mandatory per Skill guidelines)
+// 2. Validate Connection to Firestore safely (Mandatory per Skill guidelines)
 export async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
+    if (auth.currentUser) {
+      await getDocFromServer(doc(db, 'test', 'connection'));
+    }
+  } catch (error: any) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+      console.warn('Firebase client is offline.');
     }
   }
 }
 testConnection();
+
+// Mask email for safe privacy-compliant diagnostic logging (e.g. m***e@gmail.com)
+export const maskEmail = (email?: string | null): string | null => {
+  if (!email) return null;
+  const parts = email.split('@');
+  if (parts.length !== 2) return '***';
+  const name = parts[0];
+  const domain = parts[1];
+  if (name.length <= 2) return `${name[0]}***@${domain}`;
+  return `${name[0]}***${name[name.length - 1]}@${domain}`;
+};
 
 // 3. Error Handling conforming to FirestoreErrorInfo
 export enum OperationType {
@@ -94,25 +128,69 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): never {
+  const errCode = (error as any)?.code || 'unknown';
+  const errMsg = error instanceof Error ? error.message : String(error);
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
+    operationType,
+    path,
     authInfo: {
       userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
+      email: maskEmail(auth.currentUser?.email),
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
       tenantId: auth.currentUser?.tenantId,
       providerInfo:
         auth.currentUser?.providerData?.map((provider) => ({
           providerId: provider.providerId,
-          email: provider.email,
+          email: maskEmail(provider.email),
         })) || [],
     },
-    operationType,
-    path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error(`Firestore Error [${errCode}]: `, JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+export interface SystemDiagnosticSummary {
+  projectId: string;
+  authDomain: string;
+  firestoreDatabaseId: string;
+  currentHostname: string;
+  origin: string;
+  authState: 'authenticated' | 'unauthenticated' | 'loading';
+  authenticatedUid: string | null;
+  authenticatedEmailMasked: string | null;
+  isVercel: boolean;
+  isAiStudio: boolean;
+  timestamp: string;
+}
+
+export const getSystemDiagnosticSummary = (
+  currentUser?: User | null,
+  isAuthLoading = false
+): SystemDiagnosticSummary => {
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'unknown';
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'unknown';
+  const isVercel = hostname.includes('vercel.app');
+  const isAiStudio = hostname.includes('run.app') || hostname.includes('google');
+
+  return {
+    projectId: firebaseAppConfig.projectId,
+    authDomain: firebaseAppConfig.authDomain,
+    firestoreDatabaseId: firebaseAppConfig.firestoreDatabaseId,
+    currentHostname: hostname,
+    origin,
+    authState: isAuthLoading ? 'loading' : currentUser ? 'authenticated' : 'unauthenticated',
+    authenticatedUid: currentUser?.uid || null,
+    authenticatedEmailMasked: maskEmail(currentUser?.email),
+    isVercel,
+    isAiStudio,
+    timestamp: new Date().toISOString(),
+  };
+};
+
+if (typeof window !== 'undefined') {
+  (window as any).__cardpulse_system_diagnostics = getSystemDiagnosticSummary;
 }
 
 // 4. Browser Environment Detection & Mobile Diagnostic Logging
@@ -251,7 +329,11 @@ export const detectBrowserEnv = (): BrowserEnv => {
     return { isMobile: false, isInAppBrowser: false, isIOS: false, isAndroid: false };
   }
   const ua = navigator.userAgent || '';
-  const isIOS = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream;
+  const isIPadOS =
+    typeof navigator !== 'undefined' &&
+    navigator.platform === 'MacIntel' &&
+    (navigator.maxTouchPoints || 0) > 1;
+  const isIOS = (/iPad|iPhone|iPod/.test(ua) || isIPadOS) && !(window as any).MSStream;
   const isAndroid = /Android/i.test(ua);
   const isMobile = isIOS || isAndroid || /webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
 
@@ -285,6 +367,8 @@ export const detectBrowserEnv = (): BrowserEnv => {
 export const getAuthErrorMessage = (error: any): string => {
   const code = error?.code || '';
   const currentDomain = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isVercel = currentDomain.includes('vercel.app');
+
   switch (code) {
     case 'auth/popup-blocked':
       return 'เบราว์เซอร์บล็อกหน้าต่าง Pop-up กำลังเปลี่ยนไปใช้การเข้าสู่ระบบแบบเต็มหน้าจอ...';
@@ -292,7 +376,14 @@ export const getAuthErrorMessage = (error: any): string => {
     case 'auth/cancelled-popup-request':
       return 'ยกเลิกการเข้าสู่ระบบแล้ว';
     case 'auth/unauthorized-domain':
-      return `โดเมน "${currentDomain || 'ปัจจุบัน'}" ยังไม่ได้รับอนุญาตใน Firebase Console โปรดไปที่ Firebase Console > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมน "${currentDomain}"`;
+      return isVercel || currentDomain.includes('jodna')
+        ? `โดเมน "${currentDomain || 'jodna.vercel.app'}" ยังไม่ได้รับอนุญาตใน Firebase Console โปรดไปที่ Firebase Console (Project: ${firebaseAppConfig.projectId}) > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมน "${currentDomain || 'jodna.vercel.app'}" เพื่อเปิดใช้งาน Google Sign-in`
+        : `โดเมน "${currentDomain || 'ปัจจุบัน'}" ยังไม่ได้รับอนุญาตใน Firebase Console โปรดไปที่ Firebase Console (Project: ${firebaseAppConfig.projectId}) > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมน "${currentDomain}"`;
+    case 'auth/configuration-not-found':
+      return `ไม่พบการตั้งค่า Identity Platform สำหรับโดเมน "${currentDomain}" โปรดตรวจสอบ Authorized domains ใน Firebase Console (Project: ${firebaseAppConfig.projectId})`;
+    case 'permission-denied':
+    case 'auth/permission-denied':
+      return 'ไม่มีสิทธิ์เข้าถึงข้อมูล (Permission Denied 403) โปรดตรวจสอบว่าเข้าสู่ระบบด้วยบัญชี Google ที่ถูกต้อง';
     case 'auth/operation-not-allowed':
       return 'ระบบ Google Sign-in ยังไม่เปิดใช้งานใน Firebase Console โปรดเปิดใช้งาน Google Provider ในเมนู Authentication Settings';
     case 'auth/network-request-failed':
@@ -306,92 +397,59 @@ export const getAuthErrorMessage = (error: any): string => {
   }
 };
 
+// Concurrency Mutex to prevent duplicate rapid clicks or race conditions
+let isLoginInProgress = false;
+
 // Primary Login Function (Desktop: Popup, Mobile/Fallback: Redirect)
 export const loginWithGoogle = async (): Promise<{ user: User | null; redirectInitiated?: boolean }> => {
-  const env = detectBrowserEnv();
-
-  logAuthDiagnostic('Login Started', {
-    platform: env.isIOS ? 'iOS' : env.isAndroid ? 'Android' : 'Desktop',
-    isMobile: env.isMobile,
-    isInAppBrowser: env.isInAppBrowser,
-    inAppBrowserName: env.inAppBrowserName,
-    flow: env.isMobile ? 'Redirect' : 'Popup',
-    currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
-  });
-
-  // If in-app browser is detected, throw actionable error for user
-  if (env.isInAppBrowser) {
-    const err = new Error(
-      `ตรวจพบการใช้งานผ่าน ${env.inAppBrowserName || 'In-app'} Browser ซึ่ง Google ไม่อนุญาตให้ล็อกอินเพื่อความปลอดภัย โปรดเปิดด้วย Safari หรือ Chrome`
-    );
-    (err as any).code = 'auth/disallowed_useragent';
-    logAuthDiagnostic('Auth Error Code', {
-      code: 'auth/disallowed_useragent',
-      message: err.message,
-    });
-    throw err;
+  if (isLoginInProgress) {
+    logAuthDiagnostic('Login Started', { status: 'rejected_already_in_progress' });
+    return { user: null, redirectInitiated: isRedirectLoginPending() };
   }
 
-  // Mobile browsers (iOS Safari, Android Chrome): Always use signInWithRedirect
-  if (env.isMobile) {
-    try {
-      setRedirectLoginFlag();
-      logAuthDiagnostic('Redirect Initiated', {
-        provider: 'google.com',
-        currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
-        currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
-        browserEnv: env,
-      });
-      await signInWithRedirect(auth, googleProvider);
-      return { user: null, redirectInitiated: true };
-    } catch (redirectErr: any) {
-      clearRedirectLoginFlag();
-      logAuthDiagnostic('Auth Error Code', {
-        code: redirectErr?.code,
-        message: redirectErr?.message,
-      });
-      throw new Error(getAuthErrorMessage(redirectErr));
-    }
-  }
+  isLoginInProgress = true;
+  let redirectInitiated = false;
 
-  // Desktop browsers: Prefer signInWithPopup, with fallback to Redirect if popup is blocked
   try {
-    const result = await signInWithPopup(auth, googleProvider);
-    if (result && result.user) {
-      logAuthDiagnostic('User UID Confirmed', {
-        uid: result.user.uid,
-        email: result.user.email,
-        flow: 'Popup',
-      });
-    }
-    return { user: result.user };
-  } catch (error: any) {
-    if (
-      error?.code === 'auth/popup-closed-by-user' ||
-      error?.code === 'auth/cancelled-popup-request'
-    ) {
+    const env = detectBrowserEnv();
+
+    logAuthDiagnostic('Login Started', {
+      platform: env.isIOS ? 'iOS' : env.isAndroid ? 'Android' : 'Desktop',
+      isMobile: env.isMobile,
+      isInAppBrowser: env.isInAppBrowser,
+      inAppBrowserName: env.inAppBrowserName,
+      flow: env.isMobile ? 'Redirect' : 'Popup',
+      currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
+    });
+
+    // If in-app browser is detected, throw actionable error for user
+    if (env.isInAppBrowser) {
+      const err = new Error(
+        `ตรวจพบการใช้งานผ่าน ${env.inAppBrowserName || 'In-app'} Browser ซึ่ง Google ไม่อนุญาตให้ล็อกอินเพื่อความปลอดภัย โปรดเปิดด้วย Safari หรือ Chrome`
+      );
+      (err as any).code = 'auth/disallowed_useragent';
       logAuthDiagnostic('Auth Error Code', {
-        code: error.code,
-        message: 'Popup cancelled or closed by user',
+        code: 'auth/disallowed_useragent',
+        message: err.message,
       });
-      return { user: null };
+      throw err;
     }
 
-    // Popup was blocked on Desktop -> Automatic Fallback to signInWithRedirect
-    if (error?.code === 'auth/popup-blocked') {
-      logAuthDiagnostic('Auth Error Code', {
-        code: 'auth/popup-blocked',
-        fallback: 'signInWithRedirect',
-      });
+    // Mobile browsers (iOS Safari, Android Chrome, iPadOS): Always use signInWithRedirect
+    if (env.isMobile) {
       try {
         setRedirectLoginFlag();
+        redirectInitiated = true;
         logAuthDiagnostic('Redirect Initiated', {
           provider: 'google.com',
-          reason: 'popup-blocked-fallback',
+          currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
+          currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
+          browserEnv: env,
         });
         await signInWithRedirect(auth, googleProvider);
         return { user: null, redirectInitiated: true };
       } catch (redirectErr: any) {
+        redirectInitiated = false;
         clearRedirectLoginFlag();
         logAuthDiagnostic('Auth Error Code', {
           code: redirectErr?.code,
@@ -401,12 +459,68 @@ export const loginWithGoogle = async (): Promise<{ user: User | null; redirectIn
       }
     }
 
-    logAuthDiagnostic('Auth Error Code', {
-      code: error?.code,
-      message: error?.message,
-    });
-    console.error('Login error:', error);
-    throw new Error(getAuthErrorMessage(error));
+    // Desktop browsers: Prefer signInWithPopup, with fallback to Redirect if popup is blocked
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      if (result && result.user) {
+        logAuthDiagnostic('User UID Confirmed', {
+          uid: result.user.uid,
+          email: result.user.email,
+          flow: 'Popup',
+        });
+      }
+      return { user: result.user };
+    } catch (error: any) {
+      if (
+        error?.code === 'auth/popup-closed-by-user' ||
+        error?.code === 'auth/cancelled-popup-request'
+      ) {
+        logAuthDiagnostic('Auth Error Code', {
+          code: error.code,
+          message: 'Popup cancelled or closed by user',
+        });
+        return { user: null };
+      }
+
+      // Popup was blocked on Desktop -> Automatic Fallback to signInWithRedirect
+      if (error?.code === 'auth/popup-blocked') {
+        logAuthDiagnostic('Auth Error Code', {
+          code: 'auth/popup-blocked',
+          fallback: 'signInWithRedirect',
+        });
+        try {
+          setRedirectLoginFlag();
+          redirectInitiated = true;
+          logAuthDiagnostic('Redirect Initiated', {
+            provider: 'google.com',
+            reason: 'popup-blocked-fallback',
+          });
+          await signInWithRedirect(auth, googleProvider);
+          return { user: null, redirectInitiated: true };
+        } catch (redirectErr: any) {
+          redirectInitiated = false;
+          clearRedirectLoginFlag();
+          logAuthDiagnostic('Auth Error Code', {
+            code: redirectErr?.code,
+            message: redirectErr?.message,
+          });
+          throw new Error(getAuthErrorMessage(redirectErr));
+        }
+      }
+
+      logAuthDiagnostic('Auth Error Code', {
+        code: error?.code,
+        message: error?.message,
+      });
+      console.error('Login error:', error);
+      throw new Error(getAuthErrorMessage(error));
+    }
+  } finally {
+    // If redirect was initiated, keep lock active while browser unloads to Google.
+    // If popup completed or error occurred, release mutex so user can retry.
+    if (!redirectInitiated) {
+      isLoginInProgress = false;
+    }
   }
 };
 
@@ -422,9 +536,22 @@ export const checkRedirectLoginResult = async (): Promise<User | null> => {
   }
 
   try {
-    // If auth.currentUser is already populated on mount, return immediately
+    // 1. Wait for Firebase Auth persistence ready state if available (up to 4s)
+    if (typeof (auth as any).authStateReady === 'function') {
+      try {
+        await Promise.race([
+          (auth as any).authStateReady(),
+          new Promise((resolve) => setTimeout(resolve, 4000)),
+        ]);
+      } catch (readyErr) {
+        console.warn('authStateReady notice:', readyErr);
+      }
+    }
+
+    // 2. If auth.currentUser is already populated on mount, return immediately
     if (auth.currentUser) {
       clearRedirectLoginFlag();
+      isLoginInProgress = false;
       logAuthDiagnostic('Redirect Result Received', {
         resolvedVia: 'auth.currentUser',
         uid: auth.currentUser.uid,
@@ -433,7 +560,7 @@ export const checkRedirectLoginResult = async (): Promise<User | null> => {
       return auth.currentUser;
     }
 
-    // Wrap getRedirectResult with an 8-second safety timeout so UI never hangs permanently
+    // 3. Wrap getRedirectResult with an 8-second safety timeout so UI never hangs permanently
     const redirectPromise = getRedirectResult(auth);
     const timeoutPromise = new Promise<null>((resolve) =>
       setTimeout(() => resolve(null), 8000)
@@ -443,6 +570,7 @@ export const checkRedirectLoginResult = async (): Promise<User | null> => {
 
     if (result && result.user) {
       clearRedirectLoginFlag();
+      isLoginInProgress = false;
       logAuthDiagnostic('Redirect Result Received', {
         resolvedVia: 'getRedirectResult',
         uid: result.user.uid,
@@ -456,9 +584,10 @@ export const checkRedirectLoginResult = async (): Promise<User | null> => {
       return result.user;
     }
 
-    // If getRedirectResult returned null, check auth.currentUser once more
+    // 4. If getRedirectResult returned null, check auth.currentUser once more
     if (pending) {
       clearRedirectLoginFlag();
+      isLoginInProgress = false;
       const lateUser = auth.currentUser as User | null;
       if (lateUser) {
         logAuthDiagnostic('Redirect Result Received', {
@@ -477,6 +606,7 @@ export const checkRedirectLoginResult = async (): Promise<User | null> => {
     return null;
   } catch (error: any) {
     clearRedirectLoginFlag();
+    isLoginInProgress = false;
     logAuthDiagnostic('Auth Error Code', {
       source: 'getRedirectResult',
       code: error?.code,
@@ -493,6 +623,7 @@ export const checkRedirectLoginResult = async (): Promise<User | null> => {
 };
 
 export const logoutUser = async (): Promise<void> => {
+  isLoginInProgress = false;
   clearRedirectLoginFlag();
   logAuthDiagnostic('Auth State Changed', { action: 'logout' });
   await signOut(auth);

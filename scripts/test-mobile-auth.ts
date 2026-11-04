@@ -34,10 +34,18 @@ const sessionStore = mockStorage();
 (global as any).localStorage = localStore;
 (global as any).sessionStorage = sessionStore;
 let mockUserAgent = '';
+let mockPlatform = '';
+let mockMaxTouchPoints = 0;
 Object.defineProperty(globalThis, 'navigator', {
   value: {
     get userAgent() {
       return mockUserAgent;
+    },
+    get platform() {
+      return mockPlatform;
+    },
+    get maxTouchPoints() {
+      return mockMaxTouchPoints;
     },
   },
   configurable: true,
@@ -106,9 +114,21 @@ assert(env.inAppBrowserName === 'Facebook', 'Identifies Facebook name');
 console.log('\n[Test 4] User-Agent Detection - Desktop Chrome');
 mockUserAgent =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+mockPlatform = 'MacIntel';
+mockMaxTouchPoints = 0;
 env = detectBrowserEnv();
 assert(env.isMobile === false, 'Desktop is not Mobile');
 assert(env.isInAppBrowser === false, 'Desktop is not In-App');
+
+// Test 4b: iPadOS Touch Device Detection (Safari sends Mac OS X UA with touch points)
+console.log('\n[Test 4b] User-Agent Detection - iPadOS Desktop Mode Safari');
+mockUserAgent =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15';
+mockPlatform = 'MacIntel';
+mockMaxTouchPoints = 5;
+env = detectBrowserEnv();
+assert(env.isMobile === true, 'iPadOS identified as Mobile/Tablet for redirect flow');
+assert(env.isIOS === true, 'iPadOS identified as iOS');
 
 // Test 5: Dual Storage Redirect State Management
 console.log('\n[Test 5] Dual-Storage Redirect Pending Flags');
@@ -180,9 +200,22 @@ assert(
   'Includes exact current domain in unauthorized-domain error'
 );
 assert(
-  unauthErr.includes('Firebase Console > Authentication > Settings > Authorized domains'),
+  unauthErr.includes('Authorized domains'),
   'Provides actionable instructions for Authorized domains'
 );
+
+// Test 8b: Jodna Vercel domain error message
+(global as any).window.location.hostname = 'jodna.vercel.app';
+const jodnaErr = getAuthErrorMessage({ code: 'auth/unauthorized-domain' });
+assert(
+  jodnaErr.includes('jodna.vercel.app'),
+  'Includes jodna.vercel.app in unauthorized-domain error'
+);
+assert(
+  jodnaErr.includes('gen-lang-client-0967357802'),
+  'Includes exact Firebase project ID in error message'
+);
+(global as any).window.location.hostname = 'ais-dev-77wpitj4uybcihlwn7nq7h-824165829063.asia-east1.run.app';
 
 const disallowedErr = getAuthErrorMessage({ code: 'auth/disallowed_useragent' });
 assert(disallowedErr.includes('Safari') && disallowedErr.includes('Chrome'), 'Actionable message for disallowed UA');

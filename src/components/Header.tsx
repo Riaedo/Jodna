@@ -29,6 +29,7 @@ import {
   AlertCircle,
   Clock,
   RefreshCw,
+  Activity,
 } from 'lucide-react';
 
 export type SyncState = 'synced' | 'syncing' | 'pending' | 'failed' | 'conflict';
@@ -57,6 +58,7 @@ interface HeaderProps {
   conflictCount?: number;
   onTriggerSync?: () => void;
   onOpenConflictModal?: () => void;
+  onOpenDiagnosticsModal?: () => void;
   onCleanStart?: () => void;
 }
 
@@ -84,6 +86,7 @@ export const Header: React.FC<HeaderProps> = ({
   conflictCount = 0,
   onTriggerSync,
   onOpenConflictModal,
+  onOpenDiagnosticsModal,
   onCleanStart,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -578,7 +581,36 @@ export const Header: React.FC<HeaderProps> = ({
                     </button>
                   </div>
 
-                  {/* 5. Clean Production Start Item */}
+                  {/* 5. System Diagnostics (AI Studio vs Vercel Sync Status) */}
+                  {onOpenDiagnosticsModal && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onOpenDiagnosticsModal();
+                        }}
+                        className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 hover:border-cyan-500/40 transition text-left cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 group-hover:scale-105 transition shrink-0">
+                            <Activity className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-xs font-semibold text-white block group-hover:text-cyan-300 transition">
+                              ตรวจสอบระบบ & คลาวด์ (Diagnostics)
+                            </span>
+                            <span className="text-[10px] text-slate-400 block truncate">
+                              เปรียบเทียบ UID, Project ID และสถานะ Firestore
+                            </span>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400 shrink-0" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 6. Clean Production Start Item */}
                   {onCleanStart && (
                     <div className="pt-1.5 border-t border-slate-800">
                       <button
