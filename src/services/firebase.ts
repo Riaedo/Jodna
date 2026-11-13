@@ -64,7 +64,7 @@ export const db = firebaseAppConfig.firestoreDatabaseId
   : getFirestore(app);
 
 // Google Auth Provider with account selection prompt
-const googleProvider = new GoogleAuthProvider();
+export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account',
 });
@@ -363,6 +363,13 @@ export const detectBrowserEnv = (): BrowserEnv => {
   return { isMobile, isInAppBrowser, inAppBrowserName, isIOS, isAndroid };
 };
 
+// JodnaOT-compatible mobile detector (merges UA + iPadOS touch detection + narrow viewport)
+export const isMobileDevice = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const env = detectBrowserEnv();
+  return env.isMobile || window.innerWidth <= 768;
+};
+
 // Error Message Mapping with dynamic domain resolution
 export const getAuthErrorMessage = (error: any): string => {
   const code = error?.code || '';
@@ -397,241 +404,15 @@ export const getAuthErrorMessage = (error: any): string => {
   }
 };
 
-// Concurrency Mutex to prevent duplicate rapid clicks or race conditions
-let isLoginInProgress = false;
-
-// Primary Login Function (Desktop: Popup, Mobile/Fallback: Redirect)
-export const loginWithGoogle = async (): Promise<{ user: User | null; redirectInitiated?: boolean }> => {
-  if (isLoginInProgress) {
-    logAuthDiagnostic('Login Started', { status: 'rejected_already_in_progress' });
-    return { user: null, redirectInitiated: isRedirectLoginPending() };
-  }
-
-  isLoginInProgress = true;
-  let redirectInitiated = false;
-
-  try {
-    const env = detectBrowserEnv();
-
-    logAuthDiagnostic('Login Started', {
-      platform: env.isIOS ? 'iOS' : env.isAndroid ? 'Android' : 'Desktop',
-      isMobile: env.isMobile,
-      isInAppBrowser: env.isInAppBrowser,
-      inAppBrowserName: env.inAppBrowserName,
-      flow: env.isMobile ? 'Redirect' : 'Popup',
-      currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
-    });
-
-    // If in-app browser is detected, throw actionable error for user
-    if (env.isInAppBrowser) {
-      const err = new Error(
-        `ตรวจพบการใช้งานผ่าน ${env.inAppBrowserName || 'In-app'} Browser ซึ่ง Google ไม่อนุญาตให้ล็อกอินเพื่อความปลอดภัย โปรดเปิดด้วย Safari หรือ Chrome`
-      );
-      (err as any).code = 'auth/disallowed_useragent';
-      logAuthDiagnostic('Auth Error Code', {
-        code: 'auth/disallowed_useragent',
-        message: err.message,
-      });
-      throw err;
-    }
-
-    // Mobile browsers (iOS Safari, Android Chrome, iPadOS): Always use signInWithRedirect
-    if (env.isMobile) {
-      try {
-        setRedirectLoginFlag();
-        redirectInitiated = true;
-        logAuthDiagnostic('Redirect Initiated', {
-          provider: 'google.com',
-          currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
-          currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
-          browserEnv: env,
-        });
-        await signInWithRedirect(auth, googleProvider);
-        return { user: null, redirectInitiated: true };
-      } catch (redirectErr: any) {
-        redirectInitiated = false;
-        clearRedirectLoginFlag();
-        logAuthDiagnostic('Auth Error Code', {
-          code: redirectErr?.code,
-          message: redirectErr?.message,
-        });
-        throw new Error(getAuthErrorMessage(redirectErr));
-      }
-    }
-
-    // Desktop browsers: Prefer signInWithPopup, with fallback to Redirect if popup is blocked
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      if (result && result.user) {
-        logAuthDiagnostic('User UID Confirmed', {
-          uid: result.user.uid,
-          email: result.user.email,
-          flow: 'Popup',
-        });
-      }
-      return { user: result.user };
-    } catch (error: any) {
-      if (
-        error?.code === 'auth/popup-closed-by-user' ||
-        error?.code === 'auth/cancelled-popup-request'
-      ) {
-        logAuthDiagnostic('Auth Error Code', {
-          code: error.code,
-          message: 'Popup cancelled or closed by user',
-        });
-        return { user: null };
-      }
-
-      // Popup was blocked on Desktop -> Automatic Fallback to signInWithRedirect
-      if (error?.code === 'auth/popup-blocked') {
-        logAuthDiagnostic('Auth Error Code', {
-          code: 'auth/popup-blocked',
-          fallback: 'signInWithRedirect',
-        });
-        try {
-          setRedirectLoginFlag();
-          redirectInitiated = true;
-          logAuthDiagnostic('Redirect Initiated', {
-            provider: 'google.com',
-            reason: 'popup-blocked-fallback',
-          });
-          await signInWithRedirect(auth, googleProvider);
-          return { user: null, redirectInitiated: true };
-        } catch (redirectErr: any) {
-          redirectInitiated = false;
-          clearRedirectLoginFlag();
-          logAuthDiagnostic('Auth Error Code', {
-            code: redirectErr?.code,
-            message: redirectErr?.message,
-          });
-          throw new Error(getAuthErrorMessage(redirectErr));
-        }
-      }
-
-      logAuthDiagnostic('Auth Error Code', {
-        code: error?.code,
-        message: error?.message,
-      });
-      console.error('Login error:', error);
-      throw new Error(getAuthErrorMessage(error));
-    }
-  } finally {
-    // If redirect was initiated, keep lock active while browser unloads to Google.
-    // If popup completed or error occurred, release mutex so user can retry.
-    if (!redirectInitiated) {
-      isLoginInProgress = false;
-    }
-  }
+// Re-export Firebase Auth primitives for AuthContext.tsx (Single Source of Truth)
+export {
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signOut,
+  onAuthStateChanged,
 };
-
-// Check for redirect result on app startup with race safety and timeout safeguard
-export const checkRedirectLoginResult = async (): Promise<User | null> => {
-  const pending = isRedirectLoginPending();
-  if (pending) {
-    logAuthDiagnostic('Redirect Returned', {
-      pending: true,
-      currentOrigin: typeof window !== 'undefined' ? window.location.origin : '',
-      currentHref: typeof window !== 'undefined' ? window.location.href : '',
-    });
-  }
-
-  try {
-    // 1. Wait for Firebase Auth persistence ready state if available (up to 4s)
-    if (typeof (auth as any).authStateReady === 'function') {
-      try {
-        await Promise.race([
-          (auth as any).authStateReady(),
-          new Promise((resolve) => setTimeout(resolve, 4000)),
-        ]);
-      } catch (readyErr) {
-        console.warn('authStateReady notice:', readyErr);
-      }
-    }
-
-    // 2. If auth.currentUser is already populated on mount, return immediately
-    if (auth.currentUser) {
-      clearRedirectLoginFlag();
-      isLoginInProgress = false;
-      logAuthDiagnostic('Redirect Result Received', {
-        resolvedVia: 'auth.currentUser',
-        uid: auth.currentUser.uid,
-        email: auth.currentUser.email,
-      });
-      return auth.currentUser;
-    }
-
-    // 3. Wrap getRedirectResult with an 8-second safety timeout so UI never hangs permanently
-    const redirectPromise = getRedirectResult(auth);
-    const timeoutPromise = new Promise<null>((resolve) =>
-      setTimeout(() => resolve(null), 8000)
-    );
-
-    const result = await Promise.race([redirectPromise, timeoutPromise]);
-
-    if (result && result.user) {
-      clearRedirectLoginFlag();
-      isLoginInProgress = false;
-      logAuthDiagnostic('Redirect Result Received', {
-        resolvedVia: 'getRedirectResult',
-        uid: result.user.uid,
-        email: result.user.email,
-      });
-      logAuthDiagnostic('User UID Confirmed', {
-        uid: result.user.uid,
-        email: result.user.email,
-        flow: 'Redirect',
-      });
-      return result.user;
-    }
-
-    // 4. If getRedirectResult returned null, check auth.currentUser once more
-    if (pending) {
-      clearRedirectLoginFlag();
-      isLoginInProgress = false;
-      const lateUser = auth.currentUser as User | null;
-      if (lateUser) {
-        logAuthDiagnostic('Redirect Result Received', {
-          resolvedVia: 'auth.currentUserAfterRace',
-          uid: lateUser.uid,
-          email: lateUser.email,
-        });
-        return lateUser;
-      }
-      logAuthDiagnostic('Redirect Result Received', {
-        hasUser: false,
-        pendingWasSet: true,
-      });
-    }
-
-    return null;
-  } catch (error: any) {
-    clearRedirectLoginFlag();
-    isLoginInProgress = false;
-    logAuthDiagnostic('Auth Error Code', {
-      source: 'getRedirectResult',
-      code: error?.code,
-      message: error?.message,
-    });
-    logAuthDiagnostic('Redirect Result Received', {
-      error: true,
-      code: error?.code,
-      message: error?.message,
-    });
-    console.error('Redirect result error:', error);
-    throw new Error(getAuthErrorMessage(error));
-  }
-};
-
-export const logoutUser = async (): Promise<void> => {
-  isLoginInProgress = false;
-  clearRedirectLoginFlag();
-  logAuthDiagnostic('Auth State Changed', { action: 'logout' });
-  await signOut(auth);
-};
-
-export const subscribeAuth = (callback: (user: User | null) => void) => {
-  return onAuthStateChanged(auth, callback);
-};
+export type { User };
 
 // 5. User Profile / Settings
 export interface UserPreferencesPayload {

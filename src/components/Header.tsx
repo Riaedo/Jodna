@@ -31,6 +31,7 @@ import {
   RefreshCw,
   Activity,
 } from 'lucide-react';
+import { UserAuthButton } from './UserAuthButton';
 
 export type SyncState = 'synced' | 'syncing' | 'pending' | 'failed' | 'conflict';
 
@@ -255,6 +256,9 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>ซิงก์แล้ว</span>
               </div>
             ) : null}
+
+            {/* JodnaOT-Aligned Google Auth Button & Profile Dropdown */}
+            <UserAuthButton />
 
             {/* Hamburger Button (Export and settings reside ONLY here as requested) */}
             <div className="relative">

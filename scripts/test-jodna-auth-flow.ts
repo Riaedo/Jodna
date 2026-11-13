@@ -30,6 +30,7 @@ import assert from 'node:assert';
 import {
   firebaseAppConfig,
   detectBrowserEnv,
+  isMobileDevice,
   getAuthErrorMessage,
   maskEmail,
   isRedirectLoginPending,
@@ -37,6 +38,7 @@ import {
   clearRedirectLoginFlag,
   getSystemDiagnosticSummary,
 } from '../src/services/firebase';
+import { parseAuthError } from '../src/context/AuthContext';
 
 console.log('====================================================');
 console.log('RUNNING JODNA AUTHENTICATION & REGRESSION TEST SUITE');
@@ -44,6 +46,7 @@ console.log('====================================================');
 
 // --- Regression Case 1: Login on PC (Desktop) ---
 console.log('\n--- Case 1: Desktop Browser Identification & Flow ---');
+(globalThis as any).window.innerWidth = 1440;
 Object.defineProperty(globalThis, 'navigator', {
   value: {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -56,11 +59,11 @@ Object.defineProperty(globalThis, 'navigator', {
 const desktopEnv = detectBrowserEnv();
 assert.strictEqual(desktopEnv.isMobile, false);
 assert.strictEqual(desktopEnv.isInAppBrowser, false);
+assert.strictEqual(isMobileDevice(), false);
 console.log('✅ PASS: Desktop environment cleanly detected');
 
 // --- Regression Case 2: Login on iPhone Safari ---
 console.log('\n--- Case 2: iPhone Safari Environment & Redirect Flow ---');
-let originalUA = (globalThis as any).navigator?.userAgent;
 Object.defineProperty(globalThis, 'navigator', {
   value: {
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
@@ -74,6 +77,7 @@ const iphoneEnv = detectBrowserEnv();
 assert.strictEqual(iphoneEnv.isMobile, true);
 assert.strictEqual(iphoneEnv.isIOS, true);
 assert.strictEqual(iphoneEnv.isInAppBrowser, false);
+assert.strictEqual(isMobileDevice(), true);
 console.log('✅ PASS: iPhone Safari routes exclusively to redirect flow');
 
 // --- Regression Case 3: Login on Android Chrome ---
@@ -91,6 +95,7 @@ const androidEnv = detectBrowserEnv();
 assert.strictEqual(androidEnv.isMobile, true);
 assert.strictEqual(androidEnv.isAndroid, true);
 assert.strictEqual(androidEnv.isInAppBrowser, false);
+assert.strictEqual(isMobileDevice(), true);
 console.log('✅ PASS: Android Chrome routes cleanly to redirect flow');
 
 // --- Regression Case 4: Logout and Login Again ---
@@ -103,7 +108,6 @@ console.log('✅ PASS: Logout clears pending redirect flags and releases mutex l
 
 // --- Regression Case 5: Refresh Web Page after Login ---
 console.log('\n--- Case 5: Page Refresh & Persistence Preservation ---');
-// When user refreshes, localStorage holds auth tokens and per-user cache
 const testUID = 'test-uid-nutsu-123';
 const mockCards = [{ id: 'card-1', name: 'KBANK Passion', last4: '8899', creditLimit: 100000 }];
 const scopedKey = `cardpulse_cards_v1_${testUID}`;
@@ -146,12 +150,11 @@ console.log('✅ PASS: Named Firestore Database ID intact, user data accessible'
 
 // --- Regression Case 9: Firestore Cloud Sync & Offline Queue Resilience ---
 console.log('\n--- Case 9: Cloud Sync & Offline Queue Architecture ---');
-// Verify sync keys are user-isolated
 const queueKey = `cardpulse_sync_queue_${testUID}`;
 assert.ok(queueKey.includes(testUID));
 console.log('✅ PASS: Sync queue strictly partitioned per authenticated UID');
 
-// --- Regression Case 10: Zero Data Leakage Across Users (Privacy & Isolation) ---
+// --- Regression Case 10: Multi-User Isolation & Privacy ---
 console.log('\n--- Case 10: Multi-User Isolation & Privacy ---');
 const userA_UID = 'user_A';
 const userB_UID = 'user_B';
@@ -160,6 +163,41 @@ assert.strictEqual(maskEmail(null), null);
 assert.strictEqual(maskEmail('sensitive.user@corporate.com'), 's***r@corporate.com');
 console.log('✅ PASS: Strict isolation across user accounts, zero data leakage');
 
+// --- Regression Case 11: AuthContext Structured Error Parsing (JodnaOT Parity) ---
+console.log('\n--- Case 11: AuthContext Structured Error Parsing ---');
+const unauthParsed = parseAuthError({ code: 'auth/unauthorized-domain' });
+assert.strictEqual(unauthParsed.code, 'auth/unauthorized-domain');
+assert.strictEqual(unauthParsed.domain, 'jodna.vercel.app');
+assert.ok(unauthParsed.message.includes('gen-lang-client-0967357802'));
+assert.ok(!unauthParsed.message.includes('ultra-lattice-fv4kj'));
+assert.ok(unauthParsed.solution?.includes('Authorized Domains'));
+
+const popupBlockedParsed = parseAuthError({ code: 'auth/popup-blocked' });
+assert.strictEqual(popupBlockedParsed.code, 'auth/popup-blocked');
+assert.ok(popupBlockedParsed.solution?.includes('Redirect'));
+
+const inAppParsed = parseAuthError({ code: 'auth/disallowed_useragent' });
+assert.strictEqual(inAppParsed.code, 'auth/disallowed_useragent');
+assert.ok(inAppParsed.solution?.includes('Safari'));
+console.log('✅ PASS: AuthContext parseAuthError provides structured domain & fallback guidance for Jodna');
+
+// --- Regression Case 12: Narrow Viewport Triggers Mobile Redirect Mode ---
+console.log('\n--- Case 12: Responsive Viewport Mobile Detection ---');
+Object.defineProperty(globalThis, 'navigator', {
+  value: {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36',
+    platform: 'MacIntel',
+    maxTouchPoints: 0,
+  },
+  configurable: true,
+  writable: true,
+});
+(globalThis as any).window.innerWidth = 390;
+assert.strictEqual(isMobileDevice(), true);
+(globalThis as any).window.innerWidth = 1280;
+assert.strictEqual(isMobileDevice(), false);
+console.log('✅ PASS: Responsive viewport <= 768px triggers redirect mode like JodnaOT');
+
 console.log('\n====================================================');
-console.log('🎉 ALL 10 REGRESSION TEST CASES PASSED SUCCESSFULLY!');
+console.log('🎉 ALL 12 REGRESSION TEST CASES PASSED SUCCESSFULLY!');
 console.log('====================================================');

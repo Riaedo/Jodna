@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   CreditCard,
   Transaction,
@@ -39,17 +39,10 @@ import { ExportCsvModal } from './components/ExportCsvModal';
 import { BrandCustomizationModal } from './components/BrandCustomizationModal';
 import { ConflictModal } from './components/ConflictModal';
 import { DiagnosticsModal } from './components/DiagnosticsModal';
-import { CreditCard as CardIcon, BarChart3, ExternalLink, Copy, Check, Loader2 } from 'lucide-react';
-import { User } from 'firebase/auth';
+import { CreditCard as CardIcon, BarChart3, Loader2 } from 'lucide-react';
+import { useAuth } from './context/AuthContext';
 import {
-  subscribeAuth,
-  loginWithGoogle,
-  logoutUser,
-  checkRedirectLoginResult,
-  detectBrowserEnv,
-  isRedirectLoginPending,
   logAuthDiagnostic,
-  clearRedirectLoginFlag,
   subscribeUserCards,
   saveUserCardToFirestore,
   saveCardOrderToFirestore,
@@ -63,8 +56,6 @@ import {
   checkAndMigrateUserData,
   cleanStartUserCloudData,
   firebaseAppConfig,
-  getSystemDiagnosticSummary,
-  maskEmail,
 } from './services/firebase';
 import {
   enqueueOperation,
@@ -210,11 +201,16 @@ export default function App() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
-  // Firebase Auth and Cloud Sync state
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Firebase Auth (Single Source of Truth via AuthContext) and Cloud Sync state
+  const {
+    user: currentUser,
+    loading: isAuthLoading,
+    setSyncStatus,
+    signInWithGoogle,
+    logout,
+  } = useAuth();
+  const prevUserUidRef = useRef<string | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(() => isRedirectLoginPending());
-  const [inAppNotice, setInAppNotice] = useState<{ isOpen: boolean; appName?: string } | null>(null);
   const [isCloudDataReady, setIsCloudDataReady] = useState<boolean>(false);
 
   // Phase 3: Offline & Network Detection state (Task 4 & Task 6)
@@ -285,89 +281,68 @@ export default function App() {
     []
   );
 
-  // 1. Subscribe to Firebase Auth changes
+  // 1. React to authenticated user changes (pre-populate scoped cache on login; clean UI on explicit logout)
   useEffect(() => {
-    const unsubscribe = subscribeAuth((user) => {
-      logAuthDiagnostic('Auth State Changed', {
-        hasUser: !!user,
-        uid: user?.uid,
-        email: maskEmail(user?.email),
-      });
-      setCurrentUser(user);
-      if (user) {
-        logAuthDiagnostic('User UID Confirmed', {
-          uid: user.uid,
-          email: maskEmail(user.email),
-        });
-        console.log('[CardPulse System Diagnostics]', getSystemDiagnosticSummary(user));
-        clearRedirectLoginFlag();
-        setIsAuthLoading(false);
-
-        // Pre-populate cards from local storage scoped key if state is currently empty
-        try {
-          const scopedKey = `${STORAGE_KEY_CARDS}_${user.uid}`;
-          const cached = localStorage.getItem(scopedKey);
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              setCards((prev) => (prev.length === 0 ? parsed : prev));
-            }
-          }
-          const cachedTxs = localStorage.getItem(`${STORAGE_KEY_TXS}_${user.uid}`);
-          if (cachedTxs) {
-            const parsedTxs = JSON.parse(cachedTxs);
-            if (Array.isArray(parsedTxs) && parsedTxs.length > 0) {
-              setTransactions((prev) => (prev.length === 0 ? parsedTxs : prev));
-            }
-          }
-        } catch {}
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // 2. Check for Google OAuth Redirect Result on mount
-  useEffect(() => {
-    let isMounted = true;
-    const isPending = isRedirectLoginPending();
-
-    if (isPending) {
-      setIsAuthLoading(true);
-    }
-
-    const checkRedirect = async () => {
+    if (currentUser) {
+      prevUserUidRef.current = currentUser.uid;
+      // Pre-populate cards and transactions from scoped LocalStorage if state is currently empty
       try {
-        const user = await checkRedirectLoginResult();
-        if (user && isMounted) {
-          setCurrentUser(user);
-          showToast(`เข้าสู่ระบบด้วย Google สำเร็จในชื่อ ${user.displayName || user.email}`);
-        }
-      } catch (err: any) {
-        if (isMounted) {
-          const errMsg = err?.message || 'เกิดข้อผิดพลาดในการรับผลการเข้าสู่ระบบ';
-          showToast(errMsg);
-          if (errMsg.includes('Authorized domains') || errMsg.includes('auth/unauthorized-domain')) {
-            setConfirmDialog({
-              isOpen: true,
-              title: 'จำเป็นต้องตั้งค่า Authorized Domain ใน Firebase Console',
-              message: errMsg,
-              detail: 'โปรดไปที่ Firebase Console > Authentication > Settings > Authorized domains แล้วเพิ่มโดเมนของแอปเพื่อเปิดใช้งาน Google Sign-in',
-              confirmLabel: 'เข้าใจแล้ว',
-              onConfirm: () => setConfirmDialog((prev) => ({ ...prev, isOpen: false })),
-            });
+        const scopedCardsKey = `${STORAGE_KEY_CARDS}_${currentUser.uid}`;
+        const cachedCards = localStorage.getItem(scopedCardsKey);
+        if (cachedCards) {
+          const parsed = JSON.parse(cachedCards);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCards((prev) => (prev.length === 0 ? parsed : prev));
           }
         }
-      } finally {
-        if (isMounted) {
-          setIsAuthLoading(false);
+        const cachedTxs = localStorage.getItem(`${STORAGE_KEY_TXS}_${currentUser.uid}`);
+        if (cachedTxs) {
+          const parsedTxs = JSON.parse(cachedTxs);
+          if (Array.isArray(parsedTxs) && parsedTxs.length > 0) {
+            setTransactions((prev) => (prev.length === 0 ? parsedTxs : prev));
+          }
         }
-      }
-    };
-    checkRedirect();
-    return () => {
-      isMounted = false;
-    };
-  }, [showToast]);
+      } catch {}
+    } else if (prevUserUidRef.current !== null) {
+      // Transitioned from signed-in -> signed-out: reset in-memory UI state cleanly
+      // Scoped LocalStorage caches and cardpulse_sync_queue_{uid} remain intact!
+      prevUserUidRef.current = null;
+      setIsCloudDataReady(false);
+      setCards([]);
+      setTransactions([]);
+      setBrandName('CardPulse');
+      setBrandLogo(null);
+      setBrandTagline('ระบบติดตามและจัดการค่าบัตรเครดิต');
+      setBgImage(null);
+      setBgOpacity(0.7);
+      setBgBlur(4);
+      setBgPosition(null);
+      setSelectedCardId(null);
+      try {
+        localStorage.removeItem(STORAGE_KEY_CARDS);
+        localStorage.removeItem(STORAGE_KEY_TXS);
+      } catch {}
+    }
+  }, [currentUser]);
+
+  // 2. Bridge Jodna syncState & network state into AuthContext.syncStatus for UserAuthButton
+  useEffect(() => {
+    if (!currentUser) {
+      setSyncStatus(isOnline ? 'local' : 'offline');
+      return;
+    }
+    if (!isOnline) {
+      setSyncStatus('offline');
+    } else if (syncState === 'syncing') {
+      setSyncStatus('saving');
+    } else if (syncState === 'failed' || syncState === 'conflict') {
+      setSyncStatus('error');
+    } else if (syncState === 'synced') {
+      setSyncStatus('synced');
+    } else {
+      setSyncStatus('saving');
+    }
+  }, [currentUser, isOnline, syncState, setSyncStatus]);
 
   // Task 4: Network Status & Automatic Sync on Reconnection
   useEffect(() => {
@@ -639,63 +614,23 @@ export default function App() {
     };
   }, [currentUser]);
 
-  // Auth Handlers (Phase 2 Enhanced)
+  // Auth Handlers delegating directly to AuthContext (JodnaOT reference flow)
   const handleLogin = async () => {
-    if (isAuthLoading) return;
-    let redirectStarted = false;
     try {
-      setIsAuthLoading(true);
-      const env = detectBrowserEnv();
-      if (env.isInAppBrowser) {
-        setInAppNotice({ isOpen: true, appName: env.inAppBrowserName });
-        showToast(
-          `ตรวจพบ ${env.inAppBrowserName || 'In-app'} Browser กรุณากดเมนู (•••) แล้วเลือก "เปิดในเบราว์เซอร์ภายนอก" หรือ Safari / Chrome เพื่อเข้าสู่ระบบด้วย Google`
-        );
-        return;
-      }
-
-      const res = await loginWithGoogle();
-      if (res.redirectInitiated) {
-        redirectStarted = true;
-        showToast('กำลังนำคุณไปยังหน้าเข้าสู่ระบบของ Google...');
-        return;
-      }
-      if (res.user) {
-        showToast(`เข้าสู่ระบบในชื่อ ${res.user.displayName || res.user.email} สำเร็จ`);
-      }
+      await signInWithGoogle('auto');
     } catch (err: any) {
-      if (err?.code === 'auth/disallowed_useragent') {
-        setInAppNotice({ isOpen: true, appName: 'In-app Browser' });
-      }
-      showToast(err.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
-    } finally {
-      if (!redirectStarted) {
-        setIsAuthLoading(false);
+      if (err?.message) {
+        showToast(err.message);
       }
     }
   };
 
   const handleLogout = async () => {
     try {
-      await logoutUser();
-      // Clean production reset: Reset state to empty arrays and clear storage to prevent demo data recurrence
-      setCurrentUser(null);
-      setIsCloudDataReady(false);
-      setCards([]);
-      setTransactions([]);
-      setBrandName('CardPulse');
-      setBrandLogo(null);
-      setBrandTagline('ระบบติดตามและจัดการค่าบัตรเครดิต');
-      setBgImage(null);
-      setBgOpacity(0.7);
-      setBgBlur(4);
-      setBgPosition(null);
-      setSelectedCardId(null);
-      localStorage.removeItem(STORAGE_KEY_CARDS);
-      localStorage.removeItem(STORAGE_KEY_TXS);
+      await logout();
       showToast('ออกจากระบบเรียบร้อยแล้ว');
     } catch (err: any) {
-      showToast(err.message || 'เกิดข้อผิดพลาดในการออกจากระบบ');
+      showToast(err?.message || 'เกิดข้อผิดพลาดในการออกจากระบบ');
     }
   };
 
@@ -1737,61 +1672,6 @@ export default function App() {
         currentPosition={bgPosition}
         onSaveBackground={handleSaveBackground}
       />
-
-      {/* In-App Browser (LINE / Facebook / Instagram) Notice Modal */}
-      {inAppNotice?.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-black/80 space-y-4">
-            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
-              <ExternalLink className="w-6 h-6" />
-            </div>
-
-            <div className="text-center space-y-2">
-              <h3 className="text-lg font-bold text-white">
-                คำแนะนำ: เปิดในเบราว์เซอร์หลัก
-              </h3>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                ระบบตรวจพบว่าคุณกำลังเปิดแอปผ่าน{' '}
-                <span className="font-semibold text-amber-400">
-                  {inAppNotice.appName || 'In-app'} Browser
-                </span>
-                <br />
-                Google ไม่อนุญาตให้ล็อกอินผ่านเบราว์เซอร์ภายในแอปเพื่อความปลอดภัยของบัญชี
-              </p>
-            </div>
-
-            <div className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-3.5 space-y-2 text-xs text-slate-300">
-              <div className="font-semibold text-indigo-300">วิธีเปิดใน Safari หรือ Chrome:</div>
-              <ol className="list-decimal list-inside space-y-1 text-slate-400 text-[11px] leading-relaxed">
-                <li>แตะปุ่มจุดสามจุด <span className="text-white font-bold">(•••)</span> หรือไอคอนแชร์ที่มุมจอ</li>
-                <li>เลือก <span className="text-white font-medium">"เปิดใน Safari"</span> หรือ <span className="text-white font-medium">"เปิดด้วยเบราว์เซอร์ภายนอก / Chrome"</span></li>
-                <li>คุณจะสามารถเข้าสู่ระบบและเชื่อมต่อ Firebase ได้อย่างเสถียร 100%</li>
-              </ol>
-            </div>
-
-            <div className="flex items-center gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(window.location.href);
-                  showToast('คัดลอกลิงก์เรียบร้อยแล้ว นำไปวางใน Safari หรือ Chrome ได้เลย');
-                }}
-                className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center justify-center gap-1.5 transition cursor-pointer"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>คัดลอกลิงก์</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setInAppNotice(null)}
-                className="py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition cursor-pointer"
-              >
-                เข้าใจแล้ว
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Task 3 & 6: Conflict Resolution Modal */}
       <ConflictModal
