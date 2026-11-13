@@ -2,9 +2,13 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Transaction, CreditCard, TransactionCategory } from '../types';
 import {
   CATEGORY_INFO,
-  PRESET_TAGS,
   calculateBillingCycle,
   getFrequentlyUsedTitlesFromHistory,
+  getFrequentTagsFromHistory,
+  cleanTagName,
+  getTagComparisonKey,
+  hasTagCaseInsensitive,
+  normalizeUniqueTags,
   FrequentUserItem,
 } from '../utils/cardUtils';
 import {
@@ -15,6 +19,8 @@ import {
   Plus,
   CreditCard as CardIcon,
   Clock,
+  Check,
+  Sparkles,
 } from 'lucide-react';
 
 interface TransactionModalProps {
@@ -44,6 +50,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [tags, setTags] = useState<string[]>([]);
   const [newTagInput, setNewTagInput] = useState('');
+  const [tagFeedback, setTagFeedback] = useState<string | null>(null);
   const [isInstallment, setIsInstallment] = useState(false);
   const [totalInstallments, setTotalInstallments] = useState<number | string>(10);
   const [currentInstallment, setCurrentInstallment] = useState<number | string>(1);
@@ -53,6 +60,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [isPaid, setIsPaid] = useState(false);
 
   useEffect(() => {
+    setTagFeedback(null);
     if (initialData) {
       setTitle(initialData.title);
       setAmount(initialData.amount.toString());
@@ -112,6 +120,8 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
     e.preventDefault();
     if (!title.trim() || numAmount <= 0 || !cardId) return;
 
+    const finalTags = normalizeUniqueTags(tags, undefined, 10);
+
     onSave(
       {
         id: initialData?.id,
@@ -120,7 +130,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         amount: numAmount,
         cardId,
         category,
-        tags: tags.length > 0 ? tags : undefined,
+        tags: finalTags.length > 0 ? finalTags : initialData ? [] : undefined,
         date,
         billingCycleMonth,
         isInstallment,
@@ -138,28 +148,89 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
     onClose();
   };
 
-  const handleToggleTag = (tagText: string) => {
-    if (tags.includes(tagText)) {
-      setTags(tags.filter((t) => t !== tagText));
-    } else {
-      setTags([...tags, tagText]);
+  // Smart Tag Suggestions: Top 10 most frequently used tags from saved records ONLY
+  const { frequentTags, canonicalTagLookup } = useMemo(() => {
+    if (!isOpen) {
+      return {
+        frequentTags: [] as ReturnType<typeof getFrequentTagsFromHistory>,
+        canonicalTagLookup: new Map<string, string>(),
+      };
     }
+    const allRanked = getFrequentTagsFromHistory(existingTransactions, Number.MAX_SAFE_INTEGER);
+    const lookup = new Map<string, string>();
+    for (const item of allRanked) {
+      lookup.set(getTagComparisonKey(item.tag), item.tag);
+    }
+    return {
+      frequentTags: allRanked.slice(0, 10),
+      canonicalTagLookup: lookup,
+    };
+  }, [isOpen, existingTransactions]);
+
+  const handleToggleTag = (tagText: string) => {
+    const cleaned = cleanTagName(tagText);
+    if (!cleaned) return;
+    const key = cleaned.toLowerCase();
+
+    if (hasTagCaseInsensitive(tags, cleaned)) {
+      setTags((prev) => prev.filter((t) => getTagComparisonKey(t) !== key));
+      setTagFeedback(null);
+      return;
+    }
+
+    if (tags.length >= 10) {
+      setTagFeedback('เลือกได้สูงสุด 10 แท็กต่อรายการ');
+      return;
+    }
+
+    const canonical = canonicalTagLookup.get(key) || cleaned;
+    setTags((prev) => (hasTagCaseInsensitive(prev, canonical) ? prev : [...prev, canonical]));
+    setTagFeedback(null);
   };
 
   const handleAddCustomTag = (e: React.KeyboardEvent | React.MouseEvent) => {
     if ('key' in e && e.key !== 'Enter') return;
     e.preventDefault();
-    const trimmed = newTagInput.trim().replace(/^#/, '');
-    if (trimmed && !tags.includes(trimmed)) {
-      setTags([...tags, trimmed]);
+
+    const rawParts = newTagInput.split(',').map((part) => cleanTagName(part)).filter(Boolean);
+    if (rawParts.length === 0) return;
+
+    let addedCount = 0;
+    let hadDuplicate = false;
+    let hitLimit = false;
+
+    const nextTags = [...tags];
+    for (const candidate of rawParts) {
+      if (hasTagCaseInsensitive(nextTags, candidate)) {
+        hadDuplicate = true;
+        continue;
+      }
+      if (nextTags.length >= 10) {
+        hitLimit = true;
+        break;
+      }
+      const key = candidate.toLowerCase();
+      nextTags.push(canonicalTagLookup.get(key) || candidate);
+      addedCount += 1;
+    }
+
+    if (addedCount > 0) {
+      setTags(nextTags);
+      setNewTagInput('');
+      setTagFeedback(hitLimit ? 'เพิ่มได้สูงสุด 10 แท็กต่อรายการ' : null);
+    } else if (hitLimit) {
+      setTagFeedback('เลือกได้สูงสุด 10 แท็กต่อรายการ');
+    } else if (hadDuplicate) {
+      setTagFeedback('มีแท็กนี้อยู่ในรายการแล้ว');
       setNewTagInput('');
     }
   };
 
   // User's frequent titles from past transaction history ONLY (excluding installments, max 8 items)
   const historyFrequentItems = useMemo(() => {
+    if (!isOpen) return [];
     return getFrequentlyUsedTitlesFromHistory(existingTransactions, 8);
-  }, [existingTransactions]);
+  }, [isOpen, existingTransactions]);
 
   // Datalist options for native autocomplete from history ONLY
   const allDatalistOptions = useMemo(() => {
@@ -172,10 +243,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       setCategory(item.category);
     }
     if (item.tags && item.tags.length > 0) {
-      setTags((prev) => {
-        const merged = new Set([...prev, ...item.tags!]);
-        return Array.from(merged);
-      });
+      setTags((prev) => normalizeUniqueTags([...prev, ...item.tags!], undefined, 10));
     }
   };
 
@@ -369,78 +437,124 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             </div>
           </div>
 
-          {/* Category Tagging System */}
-          <div className="space-y-2 p-3.5 rounded-xl bg-slate-800/40 border border-slate-700/60">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                <Tag className="w-3.5 h-3.5 text-indigo-400" />
-                <span>แท็กกำกับรายการ (Category Tags)</span>
+          {/* Category Tagging System with Smart Tag Suggestions */}
+          <div className="space-y-2.5 p-3.5 rounded-xl bg-slate-800/40 border border-slate-700/60 overflow-hidden">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 min-w-0">
+                <Tag className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                <span className="truncate">แท็กกำกับรายการ (Tags)</span>
               </label>
-              <span className="text-[11px] text-slate-400">เลือกได้หลายแท็ก</span>
+              <span className="text-[11px] text-slate-400 shrink-0 font-mono">
+                {tags.length > 0 ? `เลือกแล้ว ${tags.length}/10` : 'สูงสุด 10 แท็ก'}
+              </span>
             </div>
 
             {/* Selected Tags Display */}
             {tags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1 pb-1">
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
                 {tags.map((tagItem) => (
                   <span
                     key={tagItem}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[30px] max-w-full rounded-lg text-xs font-medium bg-indigo-500/20 text-indigo-200 border border-indigo-500/40"
                   >
-                    <span>#{tagItem}</span>
+                    <span className="truncate">#{tagItem}</span>
                     <button
                       type="button"
                       onClick={() => handleToggleTag(tagItem)}
-                      className="p-0.5 hover:text-white rounded transition cursor-pointer"
+                      className="p-0.5 text-indigo-300 hover:text-white rounded transition cursor-pointer shrink-0"
+                      aria-label={`ลบแท็ก ${tagItem}`}
+                      title={`ลบแท็ก #${tagItem}`}
                     >
-                      <X className="w-3 h-3" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   </span>
                 ))}
               </div>
             )}
 
-            {/* Preset Tags Suggestions */}
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {PRESET_TAGS.map((preset) => {
-                const isSelected = tags.includes(preset);
-                return (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => handleToggleTag(preset)}
-                    className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition cursor-pointer border ${
-                      isSelected
-                        ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm'
-                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-750'
-                    }`}
-                  >
-                    #{preset}
-                  </button>
-                );
-              })}
+            {/* Smart Tag Suggestions (Top 10 Most Frequently Used from History) */}
+            <div className="space-y-1.5 pt-0.5">
+              {frequentTags.length > 0 ? (
+                <>
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                    <span className="flex items-center gap-1 text-slate-300 font-medium">
+                      <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span>แท็กที่ใช้บ่อย (แนะนำอัตโนมัติ):</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400 shrink-0 hidden xs:inline">
+                      แตะเพื่อเลือก/ยกเลิก
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {frequentTags.map((item) => {
+                      const isSelected = hasTagCaseInsensitive(tags, item.tag);
+                      return (
+                        <button
+                          key={item.tag}
+                          type="button"
+                          onClick={() => handleToggleTag(item.tag)}
+                          aria-pressed={isSelected}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 min-h-[34px] max-w-full rounded-lg text-xs font-medium transition cursor-pointer border active:scale-95 ${
+                            isSelected
+                              ? 'bg-indigo-600 border-indigo-400 text-white shadow-sm ring-1 ring-indigo-400/50'
+                              : 'bg-slate-800/90 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-500'
+                          }`}
+                          title={
+                            isSelected
+                              ? `คลิกเพื่อนำแท็ก #${item.tag} ออก`
+                              : `คลิกเพื่อเพิ่มแท็ก #${item.tag} (ใช้แล้ว ${item.count} ครั้ง)`
+                          }
+                        >
+                          {isSelected && <Check className="w-3 h-3 shrink-0" />}
+                          <span className="truncate">#{item.tag}</span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono shrink-0 ${
+                              isSelected
+                                ? 'bg-indigo-500/50 text-indigo-100'
+                                : 'bg-slate-700/80 text-amber-300/90'
+                            }`}
+                          >
+                            {item.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : (
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  ยังไม่มีประวัติแท็กที่บันทึกไว้ — เมื่อบันทึกแท็กใหม่ ระบบจะแนะนำแท็กที่ใช้บ่อยสูงสุด 10 อันดับที่นี่โดยอัตโนมัติ
+                </p>
+              )}
             </div>
 
             {/* Custom Tag Input */}
-            <div className="flex items-center gap-2 pt-1.5">
+            <div className="flex items-center gap-2 pt-1">
               <input
                 type="text"
                 value={newTagInput}
-                onChange={(e) => setNewTagInput(e.target.value)}
+                onChange={(e) => {
+                  setNewTagInput(e.target.value);
+                  if (tagFeedback) setTagFeedback(null);
+                }}
                 onKeyDown={handleAddCustomTag}
                 placeholder="พิมพ์แท็กใหม่ เช่น ท่องเที่ยวญี่ปุ่น, ของแต่งบ้าน..."
-                className="flex-1 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+                className="min-w-0 flex-1 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
               />
               <button
                 type="button"
                 onClick={handleAddCustomTag}
-                disabled={!newTagInput.trim()}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 transition flex items-center gap-1 cursor-pointer"
+                disabled={!cleanTagName(newTagInput)}
+                className="shrink-0 px-3 py-2 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 transition flex items-center gap-1 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
-                เพิ่ม
+                <span>เพิ่ม</span>
               </button>
             </div>
+
+            {tagFeedback && (
+              <p className="text-[11px] text-amber-300 font-medium">{tagFeedback}</p>
+            )}
           </div>
 
           {/* Installment Options */}

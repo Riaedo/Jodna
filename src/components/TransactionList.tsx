@@ -7,6 +7,8 @@ import {
   CATEGORY_INFO,
   isFutureInstallmentHidden,
   getTransactionBillingCycleMonth,
+  getFrequentTagsFromHistory,
+  getTagComparisonKey,
 } from '../utils/cardUtils';
 import {
   Search,
@@ -85,13 +87,11 @@ export const TransactionList: React.FC<TransactionListProps> = ({
     return Array.from(set).sort().reverse();
   }, [visibleTransactions, availableMonths]);
 
-  // Collect all unique tags across visible transactions
+  // Collect all unique tags across visible transactions (case-insensitive deduplication, ranked by frequency)
   const allAvailableTags = useMemo(() => {
-    const set = new Set<string>();
-    visibleTransactions.forEach((tx) => {
-      tx.tags?.forEach((t) => set.add(t));
-    });
-    return Array.from(set).sort();
+    return getFrequentTagsFromHistory(visibleTransactions, Number.MAX_SAFE_INTEGER).map(
+      (item) => item.tag
+    );
   }, [visibleTransactions]);
 
   // Sync card filter if selectedCardId changes
@@ -134,9 +134,10 @@ export const TransactionList: React.FC<TransactionListProps> = ({
           return false;
         }
 
-        // Tag filter
+        // Tag filter (case-insensitive consistent match)
         if (tagFilter !== 'all') {
-          if (!tx.tags || !tx.tags.includes(tagFilter)) return false;
+          const targetKey = getTagComparisonKey(tagFilter);
+          if (!tx.tags || !tx.tags.some((t) => getTagComparisonKey(t) === targetKey)) return false;
         }
 
         // Status filter
@@ -474,10 +475,14 @@ export const TransactionList: React.FC<TransactionListProps> = ({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setTagFilter(tagFilter === tg ? 'all' : tg);
+                              const isSame =
+                                tagFilter !== 'all' &&
+                                getTagComparisonKey(tagFilter) === getTagComparisonKey(tg);
+                              setTagFilter(isSame ? 'all' : tg);
                             }}
                             className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border transition cursor-pointer ${
-                              tagFilter === tg
+                              tagFilter !== 'all' &&
+                              getTagComparisonKey(tagFilter) === getTagComparisonKey(tg)
                                 ? 'bg-indigo-600 border-indigo-500 text-white'
                                 : 'bg-slate-800/80 border-slate-700/60 text-indigo-300 hover:border-indigo-500'
                             }`}

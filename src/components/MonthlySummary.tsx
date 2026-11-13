@@ -4,6 +4,7 @@ import {
   formatThaiCurrency,
   formatThaiMonth,
   getMonthlyCardBillingDetails,
+  getTopFrequentItemsForBillingCycle,
 } from '../utils/cardUtils';
 import { CategoryPieChart } from './CategoryPieChart';
 import {
@@ -18,8 +19,8 @@ import {
   Calendar,
   CreditCard as CardIcon,
   Check,
-  Undo2,
   Info,
+  BarChart2,
 } from 'lucide-react';
 
 interface MonthlySummaryProps {
@@ -61,6 +62,11 @@ export const MonthlySummary: React.FC<MonthlySummaryProps> = ({
   const cardBillingDetails = useMemo(() => {
     return getMonthlyCardBillingDetails(cards, transactions, currentMonth);
   }, [cards, transactions, currentMonth]);
+
+  // Compute Top 5 most frequently used transaction items strictly within the selected billing cycle
+  const topFrequentItems = useMemo(() => {
+    return getTopFrequentItemsForBillingCycle(transactions, cards, currentMonth, 5);
+  }, [transactions, cards, currentMonth]);
 
   // Month navigation
   const currentIndex = availableMonths.indexOf(currentMonth);
@@ -425,6 +431,80 @@ export const MonthlySummary: React.FC<MonthlySummaryProps> = ({
             </span>
           </div>
         </div>
+      </div>
+
+      {/* Top 5 Frequently Used Items in Selected Billing Cycle */}
+      <div className="p-4 sm:p-5 rounded-2xl bg-slate-900/80 border border-slate-800/80">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 mb-3">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400 shrink-0">
+              <BarChart2 className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white tracking-tight">
+                Top 5 รายการที่ใช้บ่อย
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                จัดอันดับตามความถี่การใช้งานเฉพาะรอบบิล {formatThaiMonth(currentMonth)}
+              </p>
+            </div>
+          </div>
+          {topFrequentItems.length > 0 && (
+            <span className="text-[11px] text-slate-400 tabular-nums self-start sm:self-auto">
+              แสดง {topFrequentItems.length} อันดับแรก
+            </span>
+          )}
+        </div>
+
+        {topFrequentItems.length === 0 ? (
+          <div className="py-5 px-4 text-center rounded-xl bg-slate-800/30 border border-dashed border-slate-700/60 text-xs text-slate-400">
+            ยังไม่มีข้อมูลรายการในรอบบิลนี้
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {topFrequentItems.map((item) => (
+              <div key={`${item.rank}-${item.title}`} className="space-y-1">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`w-5 h-5 rounded-md text-[11px] font-bold flex items-center justify-center shrink-0 tabular-nums ${
+                        item.rank === 1
+                          ? 'bg-indigo-500 text-white'
+                          : 'bg-slate-800 text-slate-300 border border-slate-700/70'
+                      }`}
+                    >
+                      {item.rank}
+                    </span>
+                    <span
+                      className="text-xs sm:text-sm font-medium text-slate-100 truncate"
+                      title={item.title}
+                    >
+                      {item.title}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 tabular-nums">
+                    <span className="text-xs font-semibold text-indigo-300 whitespace-nowrap">
+                      {item.count} ครั้ง
+                    </span>
+                    <span className="text-[11px] text-slate-400 w-9 text-right">
+                      {item.percentage}%
+                    </span>
+                  </div>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-1.5 sm:h-2 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      item.rank === 1
+                        ? 'bg-gradient-to-r from-indigo-500 via-cyan-400 to-emerald-400'
+                        : 'bg-gradient-to-r from-indigo-500 to-cyan-400'
+                    }`}
+                    style={{ width: `${item.percentage}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

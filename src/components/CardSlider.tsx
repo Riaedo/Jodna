@@ -119,7 +119,7 @@ export const CardSlider: React.FC<CardSliderProps> = ({
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+        <div className="flex flex-wrap justify-center sm:justify-start gap-2.5">
         {cards.map((card, idx) => {
           const status = dueStatuses.find((s) => s.card.id === card.id);
           const cutoffAlert = calculateCardCutoffAlertStatus(card);
@@ -132,73 +132,64 @@ export const CardSlider: React.FC<CardSliderProps> = ({
             <div
               key={card.id}
               onClick={() => onSelectCard(isSelected ? null : card.id)}
-              className={`group relative rounded-2xl p-3.5 sm:p-4 cursor-pointer transition-all duration-200 border overflow-hidden ${
+              className={`group relative w-[65%] min-w-[222px] max-w-[258px] sm:w-[238px] lg:w-[256px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 border overflow-hidden ${
                 isSelected
-                  ? 'ring-2 ring-indigo-500 border-indigo-500 shadow-xl shadow-indigo-950/60 scale-[1.01]'
+                  ? 'ring-2 ring-indigo-500 border-indigo-500 shadow-lg shadow-indigo-950/60 scale-[1.01]'
                   : cutoffAlert.isNearCutoff
                   ? 'border-amber-500/50 shadow-md shadow-amber-950/30 hover:border-amber-400'
-                  : 'border-slate-800/80 hover:border-slate-700 hover:shadow-lg hover:shadow-black/40'
+                  : 'border-slate-800/80 hover:border-slate-700 hover:shadow-md hover:shadow-black/40'
               } ${isTailwind ? `bg-gradient-to-br ${card.colorGradient}` : 'bg-slate-900'}`}
               style={!isTailwind && card.colorGradient ? { background: card.colorGradient } : undefined}
             >
               {/* Subtle metallic gloss overlay */}
               <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/5 to-transparent pointer-events-none" />
 
-              {/* Card Header: Bank & Card Type (Compact vertical spacing) */}
-              <div className="relative flex items-center justify-between mb-2">
-                <div className="min-w-0 pr-2">
-                  <span className="text-[10px] font-semibold tracking-wider uppercase text-slate-300/90 block truncate">
+              {/* Card Header: Bank & Card Type (65% Proportional Scale) */}
+              <div className="relative flex items-center justify-between gap-1.5 mb-1.5">
+                <div className="min-w-0">
+                  <span className="text-[8.5px] font-semibold tracking-wider uppercase text-slate-300/90 block truncate leading-tight">
                     {card.bank}
                   </span>
-                  <h3 className="text-sm sm:text-base font-bold text-white tracking-tight truncate drop-shadow-sm">
+                  <h3 className="text-xs font-bold text-white tracking-tight truncate drop-shadow-sm leading-snug">
                     {card.name}
                   </h3>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {/* Notification Bell Icon for 3 days before cutoff */}
+                <div className="flex items-center gap-1 shrink-0">
                   {cutoffAlert.isNearCutoff && (
                     <div
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 font-bold text-[10px] shadow-lg shadow-amber-500/40 border border-amber-300 animate-pulse shrink-0"
+                      className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-amber-400 text-slate-950 font-bold text-[8.5px] shadow-sm border border-amber-300 shrink-0 tabular-nums"
                       title={`แจ้งเตือน: ${cutoffAlert.label} (ตัดรอบบิลทุกวันที่ ${card.billingCutoffDay})`}
                     >
-                      <Bell className="w-3 h-3 fill-slate-950 shrink-0" />
-                      <span className="font-extrabold tracking-tight">
-                        {cutoffAlert.daysUntilCutoff === 0 ? 'ตัดรอบวันนี้' : `ตัดรอบอีก ${cutoffAlert.daysUntilCutoff} วัน`}
+                      <Bell className="w-2.5 h-2.5 fill-slate-950 shrink-0" />
+                      <span className="font-extrabold tracking-tight whitespace-nowrap">
+                        {cutoffAlert.daysUntilCutoff === 0 ? 'วันนี้' : `${cutoffAlert.daysUntilCutoff} วัน`}
                       </span>
                     </div>
                   )}
-                  <Wifi className="w-3.5 h-3.5 text-slate-300/70 rotate-90" />
-                  <span className="text-[11px] font-black tracking-wider text-white/95 bg-white/10 px-2 py-0.5 rounded-md backdrop-blur-sm border border-white/10 shadow-sm">
+                  <Wifi className="w-3 h-3 text-slate-300/70 rotate-90 shrink-0" />
+                  <span className="text-[9.5px] font-black tracking-wider text-white/95 bg-white/10 px-1.5 py-0.5 rounded backdrop-blur-sm border border-white/10 shrink-0">
                     {card.cardType || 'VISA'}
                   </span>
                 </div>
               </div>
 
-              {/* EMV Chip & Masked Digits (Slimmer compact height) */}
-              <div className="relative flex items-center justify-between my-1.5">
-                <div className="w-8 h-5.5 rounded-md bg-gradient-to-tr from-amber-300 via-amber-400 to-amber-500 shadow-sm border border-amber-200/50 flex flex-col justify-around p-0.5 shrink-0">
-                  <div className="h-0.5 bg-amber-700/50 rounded-full" />
-                  <div className="h-0.5 bg-amber-700/50 rounded-full" />
+              {/* EMV Chip & Masked Digits (65% Proportional Scale) */}
+              <div className="relative flex items-center justify-between my-1">
+                <div className="w-6 h-4 rounded bg-gradient-to-tr from-amber-300 via-amber-400 to-amber-500 shadow-sm border border-amber-200/50 flex flex-col justify-around p-0.5 shrink-0">
+                  <div className="h-[1px] bg-amber-700/50 rounded-full" />
+                  <div className="h-[1px] bg-amber-700/50 rounded-full" />
                 </div>
-                <div className="font-mono text-xs sm:text-sm tracking-widest text-slate-200/95 font-semibold">
+                <div className="font-mono text-[10.5px] tracking-wider text-slate-200/95 font-semibold whitespace-nowrap tabular-nums">
                   •••• •••• •••• {card.last4}
                 </div>
               </div>
 
-              {/* Requirement #2: วันตัดรอบบิล, ครบกำหนดชำระ, และ วันนับถอยหลัง อยู่ในแถวเดียวกัน! */}
-              <div className="relative grid grid-cols-3 gap-1 my-1.5 p-2 rounded-xl bg-black/35 backdrop-blur-sm border border-white/5 text-[11px]">
-                {/* 1. วันตัดรอบบิล พร้อมไอคอนกระดิ่งแจ้งเตือนล่วงหน้า 3 วัน */}
-                <div className="min-w-0 pr-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] text-slate-400 block truncate">วันตัดรอบ</span>
-                    {cutoffAlert.isNearCutoff && (
-                      <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-300 animate-pulse">
-                        <Bell className="w-2.5 h-2.5 fill-amber-300 shrink-0" />
-                        <span>{cutoffAlert.daysUntilCutoff === 0 ? 'วันนี้' : `${cutoffAlert.daysUntilCutoff} วัน`}</span>
-                      </span>
-                    )}
-                  </div>
-                  <span className={`font-medium flex items-center gap-1 truncate mt-0.5 text-[11px] ${cutoffAlert.isNearCutoff ? 'text-amber-300 font-bold' : 'text-slate-200'}`}>
+              {/* 3-Column Billing Info Strip (65% Proportional Scale) */}
+              <div className="relative grid grid-cols-3 gap-0.5 my-1 p-1.5 rounded-lg bg-black/35 backdrop-blur-sm border border-white/5 text-[9.5px]">
+                {/* 1. วันตัดรอบบิล */}
+                <div className="min-w-0 pr-0.5">
+                  <span className="text-[8px] text-slate-400 block truncate leading-tight">วันตัดรอบ</span>
+                  <span className={`font-medium flex items-center gap-0.5 truncate mt-0.5 text-[9.5px] tabular-nums ${cutoffAlert.isNearCutoff ? 'text-amber-300 font-bold' : 'text-slate-200'}`}>
                     <Calendar className={`w-2.5 h-2.5 shrink-0 ${cutoffAlert.isNearCutoff ? 'text-amber-400' : 'text-slate-400'}`} />
                     <span className="truncate">วันที่ {card.billingCutoffDay}</span>
                   </span>
@@ -206,20 +197,20 @@ export const CardSlider: React.FC<CardSliderProps> = ({
 
                 {/* 2. ครบกำหนดชำระ */}
                 <div className="min-w-0 px-1 border-x border-white/5">
-                  <span className="text-[9px] text-rose-300/90 block truncate">ครบกำหนด</span>
-                  <span className="font-medium text-rose-300 flex items-center gap-1 truncate mt-0.5 text-[11px]">
+                  <span className="text-[8px] text-rose-300/90 block truncate leading-tight">ครบกำหนด</span>
+                  <span className="font-medium text-rose-300 flex items-center gap-0.5 truncate mt-0.5 text-[9.5px] tabular-nums">
                     <Clock className="w-2.5 h-2.5 text-rose-400 shrink-0" />
                     <span className="truncate">วันที่ {card.paymentDueDay}</span>
                   </span>
                 </div>
 
-                {/* 3. นับถอยหลัง / สถานะชำระ (ย้ายมาอยู่ในแถวเดียวกันตามคำขอ!) */}
+                {/* 3. นับถอยหลัง / สถานะชำระ */}
                 <div className="min-w-0 pl-1 flex flex-col justify-center">
-                  <span className="text-[9px] text-slate-400 block truncate">นับถอยหลัง</span>
-                  <div className="mt-0.5">
+                  <span className="text-[8px] text-slate-400 block truncate leading-tight">สถานะ</span>
+                  <div className="mt-0.5 min-w-0">
                     {status ? (
                       <span
-                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 max-w-full truncate ${
+                        className={`text-[8.5px] font-semibold px-1 py-0.5 rounded inline-flex items-center gap-0.5 max-w-full truncate tabular-nums ${
                           status.isPaid
                             ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                             : status.severity === 'overdue'
@@ -239,28 +230,30 @@ export const CardSlider: React.FC<CardSliderProps> = ({
                             <Clock className="w-2.5 h-2.5 shrink-0" />
                             <span className="truncate">
                               {status.daysRemaining < 0
-                                ? `เลย ${Math.abs(status.daysRemaining)} วัน`
+                                ? `เลย ${Math.abs(status.daysRemaining)} ว.`
                                 : status.daysRemaining === 0
-                                ? 'ครบวันนี้'
-                                : `อีก ${status.daysRemaining} วัน`}
+                                ? 'วันนี้'
+                                : `อีก ${status.daysRemaining} ว.`}
                             </span>
                           </>
                         )}
                       </span>
                     ) : (
-                      <span className="text-[10px] text-slate-500">-</span>
+                      <span className="text-[9px] text-slate-500">-</span>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Spend & Limit Progress (Compact) */}
-              <div className="relative space-y-1 mt-1.5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[11px] text-slate-400">ยอดรอบนี้:</span>
-                  <span className="font-bold text-white text-xs">{formatThaiCurrency(cycleSpend)}</span>
+              {/* Spend & Limit Progress (65% Proportional Scale) */}
+              <div className="relative space-y-0.5 mt-1">
+                <div className="flex items-center justify-between gap-1 text-[10px]">
+                  <span className="text-[9.5px] text-slate-400 truncate">ยอดรอบนี้</span>
+                  <span className="font-bold text-white text-[11px] tabular-nums whitespace-nowrap">
+                    {formatThaiCurrency(cycleSpend)}
+                  </span>
                 </div>
-                <div className="w-full bg-black/40 rounded-full h-1.5 overflow-hidden">
+                <div className="w-full bg-black/40 rounded-full h-1 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-300 ${
                       limitUsedPct > 80
@@ -272,56 +265,54 @@ export const CardSlider: React.FC<CardSliderProps> = ({
                     style={{ width: `${limitUsedPct}%` }}
                   />
                 </div>
-                <div className="flex items-center justify-between text-[10px] text-slate-400">
-                  <span>ใช้วงเงิน {limitUsedPct}%</span>
-                  <span>วงเงิน {formatThaiCurrency(card.creditLimit)}</span>
+                <div className="flex items-center justify-between gap-1 text-[8.5px] text-slate-400 tabular-nums">
+                  <span className="whitespace-nowrap">ใช้ {limitUsedPct}%</span>
+                  <span className="truncate text-right">วงเงิน {formatThaiCurrency(card.creditLimit)}</span>
                 </div>
               </div>
 
-              {/* Requirement #3: ปุ่ม แก้ไข และ ลบ ให้ซ่อนไว้ โดยให้โชว์เฉพาะตอนกดที่บัตรนั้นๆ (isSelected) */}
+              {/* Selected Card Action Controls (Compact) */}
               {isSelected && (
-                <div className="relative flex items-center justify-between mt-2 pt-2 border-t border-white/15 animate-in fade-in duration-150">
-                  {/* Reorder arrows on selected card */}
-                  <div className="flex items-center gap-1">
+                <div className="relative flex items-center justify-between gap-1 mt-1.5 pt-1.5 border-t border-white/15 animate-in fade-in duration-150">
+                  <div className="flex items-center shrink-0">
                     {onReorderCards && cards.length > 1 && (
-                      <div className="flex items-center gap-0.5 bg-black/30 rounded-lg p-0.5 border border-white/10">
+                      <div className="flex items-center gap-0.5 bg-black/30 rounded-md p-0.5 border border-white/10">
                         <button
                           type="button"
                           disabled={idx === 0}
                           onClick={(e) => handleQuickMove(idx, -1, e)}
-                          className="p-1 rounded text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-25 transition cursor-pointer"
+                          className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-25 transition cursor-pointer"
                           title="เลื่อนไปซ้าย (ก่อนหน้า)"
                         >
-                          <ChevronLeft className="w-3.5 h-3.5" />
+                          <ChevronLeft className="w-3 h-3" />
                         </button>
-                        <span className="text-[10px] text-slate-400 font-mono px-1">
+                        <span className="text-[9px] text-slate-400 font-mono px-0.5 tabular-nums">
                           #{idx + 1}
                         </span>
                         <button
                           type="button"
                           disabled={idx === cards.length - 1}
                           onClick={(e) => handleQuickMove(idx, 1, e)}
-                          className="p-1 rounded text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-25 transition cursor-pointer"
+                          className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-25 transition cursor-pointer"
                           title="เลื่อนไปขวา (ถัดไป)"
                         >
-                          <ChevronRight className="w-3.5 h-3.5" />
+                          <ChevronRight className="w-3 h-3" />
                         </button>
                       </div>
                     )}
                   </div>
 
-                  {/* Edit and Delete Buttons (Only visible when card is selected!) */}
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         onOpenEditCard(card);
                       }}
-                      className="px-2 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-medium border border-white/20 transition flex items-center gap-1 cursor-pointer shadow-sm"
+                      className="px-1.5 py-0.5 rounded-md bg-white/15 hover:bg-white/25 text-white text-[10px] font-medium border border-white/20 transition flex items-center gap-0.5 whitespace-nowrap cursor-pointer"
                       title="แก้ไขข้อมูลบัตร"
                     >
-                      <Edit2 className="w-3 h-3 text-indigo-300" />
+                      <Edit2 className="w-2.5 h-2.5 text-indigo-300 shrink-0" />
                       <span>แก้ไข</span>
                     </button>
                     <button
@@ -330,10 +321,10 @@ export const CardSlider: React.FC<CardSliderProps> = ({
                         e.stopPropagation();
                         onDeleteCard(card);
                       }}
-                      className="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 text-rose-200 text-xs font-medium border border-rose-500/30 transition flex items-center gap-1 cursor-pointer shadow-sm"
+                      className="px-1.5 py-0.5 rounded-md bg-rose-500/20 hover:bg-rose-500/35 text-rose-200 text-[10px] font-medium border border-rose-500/30 transition flex items-center gap-0.5 whitespace-nowrap cursor-pointer"
                       title="ลบบัตรนี้"
                     >
-                      <Trash2 className="w-3 h-3 text-rose-300" />
+                      <Trash2 className="w-2.5 h-2.5 text-rose-300 shrink-0" />
                       <span>ลบ</span>
                     </button>
                   </div>

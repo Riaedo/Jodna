@@ -1627,6 +1627,180 @@ export const getFrequentlyUsedTitlesFromHistory = (
     .slice(0, limit);
 };
 
+export interface FrequentTagItem {
+  tag: string;
+  count: number;
+  lastUsedMs: number;
+}
+
+/**
+ * Clean user-entered or historical tag string by trimming extra whitespace and leading '#'
+ */
+export const cleanTagName = (raw: string): string => {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/^#+/, '').replace(/\s+/g, ' ').trim();
+};
+
+/**
+ * Case-insensitive canonical key for comparing tag names consistently
+ */
+export const getTagComparisonKey = (tag: string): string => {
+  return cleanTagName(tag).toLowerCase();
+};
+
+/**
+ * Check whether a tag list already contains a candidate tag (case-insensitive)
+ */
+export const hasTagCaseInsensitive = (tags: string[], candidate: string): boolean => {
+  const targetKey = getTagComparisonKey(candidate);
+  if (!targetKey) return false;
+  return tags.some((t) => getTagComparisonKey(t) === targetKey);
+};
+
+/**
+ * Normalize and deduplicate a list of tags case-insensitively while respecting maxCount
+ */
+export const normalizeUniqueTags = (
+  tags: string[],
+  canonicalLookup?: Map<string, string>,
+  maxCount: number = 10
+): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of tags) {
+    const cleaned = cleanTagName(raw);
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(canonicalLookup?.get(key) || cleaned);
+    if (result.length >= maxCount) break;
+  }
+  return result;
+};
+
+const parseTimestampSafe = (val?: string): number => {
+  if (!val || typeof val !== 'string') return 0;
+  const parsed = Date.parse(val);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+/**
+ * Extracts top frequently used tags from existing saved transactions ONLY.
+ * - Counts usage frequency per tag across saved records (case-insensitive grouping).
+ * - Uses most recent usage timestamp/date as tie-breaker when frequencies are equal.
+ * - Preserves canonical tag naming without mutating historical records.
+ * - Never generates fake or predefined tags.
+ */
+export const getFrequentTagsFromHistory = (
+  transactions: Transaction[],
+  limit: number = 10
+): FrequentTagItem[] => {
+  if (!Array.isArray(transactions) || transactions.length === 0 || limit <= 0) {
+    return [];
+  }
+
+  interface TagStatsAccumulator {
+    count: number;
+    lastUsedMs: number;
+    lastDateMs: number;
+    lastActivityMs: number;
+    variants: Map<string, { label: string; count: number; lastUsedMs: number }>;
+  }
+
+  const tagMap = new Map<string, TagStatsAccumulator>();
+
+  for (const tx of transactions) {
+    if (!Array.isArray(tx.tags) || tx.tags.length === 0) continue;
+
+    const dateMs = parseTimestampSafe(tx.date);
+    const activityMs = Math.max(
+      parseTimestampSafe(tx.updatedAt),
+      parseTimestampSafe(tx.createdAt)
+    );
+    const txUsedMs = Math.max(dateMs, activityMs);
+
+    const seenInTx = new Set<string>();
+
+    for (const rawTag of tx.tags) {
+      const cleaned = cleanTagName(rawTag);
+      if (!cleaned) continue;
+      const key = cleaned.toLowerCase();
+      if (seenInTx.has(key)) continue;
+      seenInTx.add(key);
+
+      let entry = tagMap.get(key);
+      if (!entry) {
+        entry = {
+          count: 0,
+          lastUsedMs: 0,
+          lastDateMs: 0,
+          lastActivityMs: 0,
+          variants: new Map(),
+        };
+        tagMap.set(key, entry);
+      }
+
+      entry.count += 1;
+      if (txUsedMs > entry.lastUsedMs) entry.lastUsedMs = txUsedMs;
+      if (dateMs > entry.lastDateMs) entry.lastDateMs = dateMs;
+      if (activityMs > entry.lastActivityMs) entry.lastActivityMs = activityMs;
+
+      const existingVariant = entry.variants.get(cleaned);
+      if (existingVariant) {
+        existingVariant.count += 1;
+        if (txUsedMs > existingVariant.lastUsedMs) {
+          existingVariant.lastUsedMs = txUsedMs;
+        }
+      } else {
+        entry.variants.set(cleaned, {
+          label: cleaned,
+          count: 1,
+          lastUsedMs: txUsedMs,
+        });
+      }
+    }
+  }
+
+  const results: (FrequentTagItem & { lastDateMs: number; lastActivityMs: number })[] = [];
+
+  for (const entry of tagMap.values()) {
+    // Pick the most frequent casing variant; break ties by most recently used
+    let bestVariant = '';
+    let bestCount = -1;
+    let bestUsedMs = -1;
+    for (const variant of entry.variants.values()) {
+      if (
+        variant.count > bestCount ||
+        (variant.count === bestCount && variant.lastUsedMs > bestUsedMs)
+      ) {
+        bestVariant = variant.label;
+        bestCount = variant.count;
+        bestUsedMs = variant.lastUsedMs;
+      }
+    }
+
+    results.push({
+      tag: bestVariant,
+      count: entry.count,
+      lastUsedMs: entry.lastUsedMs,
+      lastDateMs: entry.lastDateMs,
+      lastActivityMs: entry.lastActivityMs,
+    });
+  }
+
+  return results
+    .sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.lastUsedMs !== a.lastUsedMs) return b.lastUsedMs - a.lastUsedMs;
+      if (b.lastDateMs !== a.lastDateMs) return b.lastDateMs - a.lastDateMs;
+      if (b.lastActivityMs !== a.lastActivityMs) return b.lastActivityMs - a.lastActivityMs;
+      return a.tag.localeCompare(b.tag, 'th');
+    })
+    .slice(0, limit)
+    .map(({ tag, count, lastUsedMs }) => ({ tag, count, lastUsedMs }));
+};
+
 /**
  * Determines whether an installment transaction is for a cycle after the current month
  * and has not yet reached that cycle's statement cut-off date.
@@ -1829,5 +2003,107 @@ export const getMonthlyCardBillingDetails = (
     };
   });
 };
+
+export interface BillingCycleTopItem {
+  rank: number;
+  title: string;
+  count: number;
+  percentage: number;
+  totalAmount: number;
+  category: TransactionCategory;
+}
+
+/**
+ * Computes the Top N (default 5) most frequently used transaction items within a specific billing cycle.
+ * - Filters strictly to valid transactions belonging to `cycleMonth` (never mixes other cycles).
+ * - Excludes deleted/invalid transactions (empty titles, non-finite or negative amounts).
+ * - Calculates proportional progress bar percentage with highest-frequency item at 100%.
+ */
+export const getTopFrequentItemsForBillingCycle = (
+  transactions: Transaction[],
+  cards: CreditCard[],
+  cycleMonth: string,
+  limit: number = 5
+): BillingCycleTopItem[] => {
+  if (!Array.isArray(transactions) || !cycleMonth || limit <= 0) {
+    return [];
+  }
+
+  interface ItemAccumulator {
+    title: string;
+    count: number;
+    totalAmount: number;
+    lastTimestampMs: number;
+    category: TransactionCategory;
+  }
+
+  const itemMap = new Map<string, ItemAccumulator>();
+
+  for (const tx of transactions) {
+    if (!tx || typeof tx.title !== 'string') continue;
+    const cleanTitle = tx.title.trim().replace(/\s+/g, ' ');
+    if (!cleanTitle) continue;
+    if (!Number.isFinite(tx.amount) || tx.amount < 0) continue;
+
+    const txCycle = getTransactionBillingCycleMonth(tx, cards);
+    if (txCycle !== cycleMonth) continue;
+
+    const charge =
+      tx.isInstallment && tx.monthlyInstallmentAmount && Number.isFinite(tx.monthlyInstallmentAmount)
+        ? tx.monthlyInstallmentAmount
+        : tx.amount;
+
+    const txTimestampMs = Math.max(
+      parseTimestampSafe(tx.date),
+      parseTimestampSafe(tx.updatedAt),
+      parseTimestampSafe(tx.createdAt)
+    );
+
+    const key = cleanTitle.toLowerCase();
+    const existing = itemMap.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.totalAmount += charge;
+      if (txTimestampMs >= existing.lastTimestampMs) {
+        existing.lastTimestampMs = txTimestampMs;
+        existing.title = cleanTitle;
+        existing.category = tx.category;
+      }
+    } else {
+      itemMap.set(key, {
+        title: cleanTitle,
+        count: 1,
+        totalAmount: charge,
+        lastTimestampMs: txTimestampMs,
+        category: tx.category,
+      });
+    }
+  }
+
+  if (itemMap.size === 0) {
+    return [];
+  }
+
+  const sorted = Array.from(itemMap.values())
+    .sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      if (b.totalAmount !== a.totalAmount) return b.totalAmount - a.totalAmount;
+      if (b.lastTimestampMs !== a.lastTimestampMs) return b.lastTimestampMs - a.lastTimestampMs;
+      return a.title.localeCompare(b.title, 'th');
+    })
+    .slice(0, limit);
+
+  const maxCount = sorted[0]?.count || 0;
+
+  return sorted.map((item, index) => ({
+    rank: index + 1,
+    title: item.title,
+    count: item.count,
+    percentage: maxCount > 0 ? Math.round((item.count / maxCount) * 100) : 0,
+    totalAmount: item.totalAmount,
+    category: item.category,
+  }));
+};
+
 
 
